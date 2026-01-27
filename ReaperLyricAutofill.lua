@@ -450,6 +450,18 @@ local function main_loop()
   gfx.y = edit_btn_y + 4
   gfx.drawstr("変更 (選択)")
 
+  -- 「挿入（母音）」ボタン（変更ボタンの右隣）
+  local vowel_btn_w, vowel_btn_h = 130, 22
+  local vowel_btn_x = edit_btn_x + edit_btn_w + 10
+  local vowel_btn_y = btn_y
+
+  gfx.set(0.3, 0.3, 0.3, 1)
+  gfx.rect(vowel_btn_x, vowel_btn_y, vowel_btn_w, vowel_btn_h, 1)
+  gfx.set(1, 1, 1, 1)
+  gfx.x = vowel_btn_x + 10
+  gfx.y = vowel_btn_y + 4
+  gfx.drawstr("挿入（母音）")
+
   gfx.update()
 
   -- ボタンクリック処理（左クリックの立ち上がりを検出）
@@ -787,6 +799,105 @@ local function main_loop()
                 end
               end
               reaper.MIDI_Sort(take)
+            end
+          end
+        end
+      end
+    elseif mx >= vowel_btn_x and mx <= (vowel_btn_x + vowel_btn_w)
+       and my >= vowel_btn_y and my <= (vowel_btn_y + vowel_btn_h) then
+      -- 挿入（母音）ボタン: 選択されたノートの歌詞から母音を抽出して自動挿入（確認なし）
+      -- 歌詞ユニット配列が未構築なら構築
+      if not lyric_chars or #lyric_chars == 0 then
+        lyric_text = read_lyrics_file()
+        update_lyric_chars()
+        last_lyric_text = lyric_text
+      end
+
+      local editor = reaper.MIDIEditor_GetActive()
+      if not editor then
+        reaper.ShowMessageBox("MIDIエディタが開かれていません。", "ReaperLyricTools - エラー", 0)
+      else
+        local take = reaper.MIDIEditor_GetTake(editor)
+        if not take then
+          reaper.ShowMessageBox("アクティブなMIDIテイクがありません。", "ReaperLyricTools - エラー", 0)
+        else
+          -- 選択されたノートを取得
+          local _, note_count, _, text_count = reaper.MIDI_CountEvts(take)
+          local last_selected_note_index = nil
+          local selected_note_lyric = nil
+          
+          for i = 0, note_count - 1 do
+            local ok, sel = reaper.MIDI_GetNote(take, i)
+            if ok and sel then
+              last_selected_note_index = i
+              -- 選択されたノートの位置を取得
+              local ok_note, _, _, startppq = reaper.MIDI_GetNote(take, i)
+              if ok_note then
+                -- その位置にある歌詞イベント（type=5）を探す
+                for j = 0, text_count - 1 do
+                  local retval, _, _, ppqpos, typ, msg = reaper.MIDI_GetTextSysexEvt(
+                    take, j, true, true, 0, 0, ""
+                  )
+                  if retval and typ == 5 and math.abs(ppqpos - startppq) < 10 then
+                    selected_note_lyric = msg
+                    break
+                  end
+                end
+              end
+            end
+          end
+          
+          if last_selected_note_index == nil then
+            reaper.ShowMessageBox("ノートが選択されていません。", "ReaperLyricTools - エラー", 0)
+          else
+            -- 選択されたノートの歌詞から母音を抽出
+            local vowel = ""
+            if selected_note_lyric and selected_note_lyric ~= "" then
+              vowel = extract_vowel(selected_note_lyric)
+            end
+            
+            if vowel == "" then
+              reaper.ShowMessageBox("選択されたノートに歌詞がありません。", "ReaperLyricTools - エラー", 0)
+            else
+              -- 母音を挿入位置に追加
+              local base_pos
+              if last_selected_note_index ~= nil then
+                base_pos = last_selected_note_index + 1
+              else
+                base_pos = note_count
+              end
+              local insert_pos = math.min(math.max(base_pos, 0), #lyric_chars)
+              
+              -- 母音をユニット配列に変換
+              local insert_units = build_lyric_units_from_text(vowel)
+              
+              -- 既存ユニットに対して、母音を挿入
+              local new_units = {}
+              for i = 1, insert_pos do
+                table.insert(new_units, lyric_chars[i])
+              end
+              for i = 1, #insert_units do
+                table.insert(new_units, insert_units[i])
+              end
+              for i = insert_pos + 1, #lyric_chars do
+                table.insert(new_units, lyric_chars[i])
+              end
+              
+              lyric_chars = new_units
+              
+              -- ユニット配列からテキストを再構成してファイルに書き戻す
+              local new_text = table.concat(lyric_chars, "")
+              local f = io.open(lyrics_file_path, "w")
+              if f then
+                f:write(new_text)
+                f:close()
+              end
+              
+              -- 内部状態も更新
+              lyric_text = new_text
+              last_lyric_text = lyric_text
+              last_note_signature = nil
+              last_note_change_time = 0
             end
           end
         end
