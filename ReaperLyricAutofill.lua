@@ -167,7 +167,7 @@ local has_js_mouse = reaper.APIExists and reaper.APIExists("JS_Mouse_GetState") 
 local function main_loop()
   -- シンプルな常時表示ウィンドウ（gfx）
   if not gui_initialized then
-    gfx.init("ReaperLyricTools - 歌詞状態", 520, 220, 0)
+    gfx.init("ReaperLyricTools", 480, 150, 0)
     gfx.dock(-1) -- ドッキング状態を記憶・復元
     gfx.setfont(1, "Arial", 15)
     gui_initialized = true
@@ -196,9 +196,9 @@ local function main_loop()
     end
   end
 
--- MIDI処理: ノート数だけでなく、位置・長さ・ピッチなども含めて
--- 「ノート配列が変化してから一定時間編集が止まったら」一度だけ歌詞を反映する。
--- さらに JS_ReaScriptAPI があれば、マウス左ボタン押下中（ドラッグ中）は絶対に反映しない。
+  -- MIDI処理: ノート数だけでなく、位置・長さ・ピッチなども含めて
+  -- 「ノート配列が変化してから一定時間編集が止まったら」一度だけ歌詞を反映する。
+  -- さらに JS_ReaScriptAPI があれば、マウス左ボタン押下中（ドラッグ中）は絶対に反映しない。
   local editor = reaper.MIDIEditor_GetActive()
   if editor and lyric_chars and #lyric_chars > 0 then
     local take = reaper.MIDIEditor_GetTake(editor)
@@ -219,8 +219,7 @@ local function main_loop()
         if mouse_down then
           -- ドラッグ中はノートシグネチャも idle タイマーも更新せず、ひたすら「編集中」とみなす
           _G.__reaper_lyrictools_is_editing = true
-          goto draw_gui
-        end
+        else
 
         -- ノート配列の簡易シグネチャを計算（位置・長さ・ピッチを含める）
         local sig = 0
@@ -232,26 +231,27 @@ local function main_loop()
           end
         end
 
-        if last_note_signature == nil or sig ~= last_note_signature then
-          -- ノート配列が変わった瞬間: シグネチャと時刻だけ記録
-          last_note_signature = sig
-          last_note_change_time = now
-          is_editing = true
-        else
-          -- ノート配列が変わっていない状態が note_apply_delay 秒続いたら歌詞を反映
-          local idle_time = (last_note_change_time > 0) and (now - last_note_change_time) or 0
-
-          if last_note_change_time > 0 and idle_time >= note_apply_delay then
-            reaper.MIDI_DisableSort(take)
-            apply_lyrics_to_notes(take, lyric_chars)
-            reaper.MIDI_Sort(take)
-            -- 反映後はタイマーをリセット（次にノート配列が変わるまで動かない）
-            last_note_change_time = 0
-            is_editing = false
+          if last_note_signature == nil or sig ~= last_note_signature then
+            -- ノート配列が変わった瞬間: シグネチャと時刻だけ記録
+            last_note_signature = sig
+            last_note_change_time = now
+            is_editing = true
           else
-            -- まだ待機時間内なので「編集中」とみなす
-            if idle_time > 0 then
-              is_editing = true
+            -- ノート配列が変わっていない状態が note_apply_delay 秒続いたら歌詞を反映
+            local idle_time = (last_note_change_time > 0) and (now - last_note_change_time) or 0
+
+            if last_note_change_time > 0 and idle_time >= note_apply_delay then
+              reaper.MIDI_DisableSort(take)
+              apply_lyrics_to_notes(take, lyric_chars)
+              reaper.MIDI_Sort(take)
+              -- 反映後はタイマーをリセット（次にノート配列が変わるまで動かない）
+              last_note_change_time = 0
+              is_editing = false
+            else
+              -- まだ待機時間内なので「編集中」とみなす
+              if idle_time > 0 then
+                is_editing = true
+              end
             end
           end
         end
@@ -262,25 +262,24 @@ local function main_loop()
     end
   end
 
-::draw_gui::
-  -- ウィンドウ描画（状態表示だけ・編集は外部テキストエディタ）
+  -- ------------------------------
+  -- ウィンドウ描画（超シンプルレイアウト）
+  -- ------------------------------
   gfx.set(0.1, 0.1, 0.1, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
 
   gfx.set(1, 1, 1, 1)
   gfx.x, gfx.y = 10, 10
-  gfx.drawstr("歌詞ファイル:")
-
-  gfx.y = gfx.y + 4
-  gfx.x = 10
+  gfx.drawstr("歌詞ファイル: ")
   gfx.set(0.7, 0.9, 0.7, 1)
-  gfx.drawstr(lyrics_file_path .. "\n")
+  gfx.drawstr(lyrics_file_path)
 
-  gfx.y = gfx.y + 4
+  gfx.y = gfx.y + 18
+  gfx.x = 10
   gfx.set(0.8, 0.8, 0.8, 1)
-  gfx.drawstr("このファイルをテキストエディタで編集してください（日本語・複数行OK）。")
+  gfx.drawstr("このファイルをテキストエディタで開いて編集してください（日本語・複数行OK）。")
 
-  -- ノート編集中かどうかの状態表示
+  -- 状態表示
   local is_editing = _G.__reaper_lyrictools_is_editing
   gfx.y = gfx.y + 18
   gfx.x = 10
@@ -289,13 +288,13 @@ local function main_loop()
     gfx.drawstr("ノート編集中: 歌詞反映を待機中…")
   else
     gfx.set(0.4, 0.9, 0.4, 1)
-    gfx.drawstr("ノート編集中ではありません: 歌詞は最新の状態です。")
+    gfx.drawstr("待機中: 歌詞は最新の状態です。")
   end
 
-  -- 「TXTファイルを生成」ボタン（右上寄りに配置）
-  local btn_w, btn_h = 150, 22
-  local btn_x = gfx.w - btn_w - 10
-  local btn_y = 10
+  -- TXTファイル作成ボタン（左下）
+  local btn_w, btn_h = 160, 22
+  local btn_x = 10
+  local btn_y = gfx.h - btn_h - 10
 
   gfx.set(0.3, 0.3, 0.3, 1)
   gfx.rect(btn_x, btn_y, btn_w, btn_h, 1)
@@ -303,23 +302,6 @@ local function main_loop()
   gfx.x = btn_x + 10
   gfx.y = btn_y + 4
   gfx.drawstr("TXTファイルを生成")
-
-  gfx.y = gfx.y + 26
-  gfx.set(0.7, 0.9, 0.7, 1)
-  local preview = lyric_text
-  if preview == "" then
-    preview = "(ファイルが空です)"
-  else
-    -- 先頭数行だけ簡易プレビュー
-    local max_lines = 4
-    local lines = {}
-    for line in (preview .. "\n"):gmatch("([^\n]*)\n") do
-      lines[#lines + 1] = line
-      if #lines >= max_lines then break end
-    end
-    preview = table.concat(lines, "\n")
-  end
-  gfx.drawstr("プレビュー:\n" .. preview)
 
   gfx.update()
 
