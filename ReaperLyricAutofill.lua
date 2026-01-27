@@ -83,10 +83,15 @@ local function apply_lyrics_to_notes(take, lyric_chars)
 -- 歌詞は外部テキストファイルから読み込みます。
 -- → OS のテキストエディタで日本語入力・貼り付けが自由にできます。
 
-local lyric_text = ""          -- 現在ファイルから読み込んだ歌詞（複数行）
-local lyric_chars = nil        -- ノートに割り当てる用の文字配列（改行除去済み）
-local last_lyric_text = nil    -- 前フレームの歌詞テキスト
-local last_note_count = -1     -- 前フレームのノート数
+local lyric_text = ""              -- 現在ファイルから読み込んだ歌詞（複数行）
+local lyric_chars = nil            -- ノートに割り当てる用の文字配列（改行除去済み）
+local last_lyric_text = nil        -- 前フレームの歌詞テキスト
+local last_note_count = -1         -- 前フレームのノート数（互換用）
+local gui_initialized = false      -- 状態表示用のシンプルなウィンドウ
+local last_mouse_cap = 0           -- クリック検出用（gfxウィンドウ内）
+local last_js_mouse_state = 0      -- JS_Mouse_GetState の前フレーム値
+local last_note_signature = nil    -- ノート配列のシグネチャ（位置・長さ・ピッチを含む）
+local last_note_change_time = 0    -- 最後にノート配列が変化した時刻
 
 -- 歌詞ファイルのパス（現在のプロジェクトフォルダ）
 local project_dir = reaper.GetProjectPath("")
@@ -132,12 +137,28 @@ end
 ------------------------------------------------------------
 
 local last_check_time = 0
-local check_interval = 0.5  -- 秒ごとにファイルをチェック
+local check_interval = 0.2  -- 歌詞ファイル監視の更新間隔（秒）
+local note_apply_delay = 2.0 -- 「ノート編集が落ち着いてから」歌詞を反映する待ち時間（秒）
+local has_js_mouse = reaper.APIExists and reaper.APIExists("JS_Mouse_GetState") or false
 
 local function main_loop()
+  -- シンプルな常時表示ウィンドウ（gfx）
+  if not gui_initialized then
+    gfx.init("ReaperLyricTools - 歌詞状態", 520, 220, 0)
+    gfx.dock(-1) -- ドッキング状態を記憶・復元
+    gfx.setfont(1, "Arial", 15)
+    gui_initialized = true
+  end
+
+  -- ウィンドウを閉じた / Esc でスクリプト終了
+  local ch = gfx.getchar()
+  if ch == -1 or ch == 27 then
+    return
+  end
+
   local now = reaper.time_precise()
 
-  -- 一定間隔ごとに歌詞ファイルをチェック
+  -- 一定間隔ごとに歌詞ファイルチェックのみ行う（軽い処理）
   if now - last_check_time >= check_interval then
     last_check_time = now
     local file_text = read_lyrics_file()
@@ -146,27 +167,151 @@ local function main_loop()
       lyric_text = file_text
       update_lyric_chars()
       last_lyric_text = lyric_text
-      -- 歌詞が変わったので、ノート再割り当てをトリガする
-      last_note_count = -1
+      -- 歌詞が変わったので、ノート配列が安定したタイミングで再割り当てをトリガする
+      last_note_signature = nil
+      last_note_change_time = 0
     end
   end
 
-  -- MIDI処理
+  -- MIDI処理: ノート数だけでなく、位置・長さ・ピッチなども含めて
+  -- 「ノート配列が変化してから一定時間編集が止まったら」一度だけ歌詞を反映する
   local editor = reaper.MIDIEditor_GetActive()
-  if editor then
+  if editor and lyric_chars and #lyric_chars > 0 then
     local take = reaper.MIDIEditor_GetTake(editor)
-    if take and lyric_chars and #lyric_chars > 0 then
+    if take then
       local _, note_count = reaper.MIDI_CountEvts(take)
-      if note_count ~= last_note_count then
-        reaper.MIDI_DisableSort(take)
-        apply_lyrics_to_notes(take, lyric_chars)
-        reaper.MIDI_Sort(take)
-        last_note_count = note_count
+      if note_count > 0 then
+        -- 現在のノート配列が「編集中かどうか」のフラグ
+        local is_editing = false
+
+        -- ノート配列の簡易シグネチャを計算（位置・長さ・ピッチを含める）
+        local sig = 0
+        for i = 0, note_count - 1 do
+          local ok, _, _, startppq, endppq, _, pitch, _ = reaper.MIDI_GetNote(take, i)
+          if ok then
+            -- シンプルな数値ハッシュ（ビット演算を使わず加算のみ）
+            sig = (sig + startppq + endppq + pitch * 131) % 2147483647
+          end
+        end
+
+        if last_note_signature == nil or sig ~= last_note_signature then
+          -- ノート配列が変わった瞬間: シグネチャと時刻だけ記録
+          last_note_signature = sig
+          last_note_change_time = now
+          is_editing = true
+        else
+          -- ノート配列が変わっていない状態が note_apply_delay 秒続いたら歌詞を反映
+          local idle_time = (last_note_change_time > 0) and (now - last_note_change_time) or 0
+          -- JS_ReaScriptAPI があれば、マウス左ボタン押下中は反映しない
+          local mouse_down = false
+          if has_js_mouse then
+            local state = reaper.JS_Mouse_GetState(0) or 0
+            last_js_mouse_state = state
+            -- 最下位ビットが左ボタン
+            mouse_down = (state % 2) == 1
+          end
+
+          if not mouse_down and last_note_change_time > 0 and idle_time >= note_apply_delay then
+            reaper.MIDI_DisableSort(take)
+            apply_lyrics_to_notes(take, lyric_chars)
+            reaper.MIDI_Sort(take)
+            -- 反映後はタイマーをリセット（次にノート配列が変わるまで動かない）
+            last_note_change_time = 0
+            is_editing = false
+          else
+            -- まだ待機時間内、またはマウスドラッグ中なので「編集中」とみなす
+            if idle_time > 0 then
+              is_editing = true
+            end
+          end
+        end
+
+        -- is_editing フラグをウィンドウ描画で使うために保存
+        _G.__reaper_lyrictools_is_editing = is_editing
       end
     end
   end
 
-  -- 停止したいときは「Actions → Terminate instances of script」等で止めてください。
+  -- ウィンドウ描画（状態表示だけ・編集は外部テキストエディタ）
+  gfx.set(0.1, 0.1, 0.1, 1)
+  gfx.rect(0, 0, gfx.w, gfx.h, 1)
+
+  gfx.set(1, 1, 1, 1)
+  gfx.x, gfx.y = 10, 10
+  gfx.drawstr("歌詞ファイル:")
+
+  gfx.y = gfx.y + 4
+  gfx.x = 10
+  gfx.set(0.7, 0.9, 0.7, 1)
+  gfx.drawstr(lyrics_file_path .. "\n")
+
+  gfx.y = gfx.y + 4
+  gfx.set(0.8, 0.8, 0.8, 1)
+  gfx.drawstr("このファイルをテキストエディタで編集してください（日本語・複数行OK）。")
+
+  -- ノート編集中かどうかの状態表示
+  local is_editing = _G.__reaper_lyrictools_is_editing
+  gfx.y = gfx.y + 18
+  gfx.x = 10
+  if is_editing then
+    gfx.set(0.9, 0.6, 0.4, 1)
+    gfx.drawstr("ノート編集中: 歌詞反映を待機中…")
+  else
+    gfx.set(0.4, 0.9, 0.4, 1)
+    gfx.drawstr("ノート編集中ではありません: 歌詞は最新の状態です。")
+  end
+
+  -- 「TXTファイルを生成」ボタン（右上寄りに配置）
+  local btn_w, btn_h = 150, 22
+  local btn_x = gfx.w - btn_w - 10
+  local btn_y = 10
+
+  gfx.set(0.3, 0.3, 0.3, 1)
+  gfx.rect(btn_x, btn_y, btn_w, btn_h, 1)
+  gfx.set(1, 1, 1, 1)
+  gfx.x = btn_x + 10
+  gfx.y = btn_y + 4
+  gfx.drawstr("TXTファイルを生成")
+
+  gfx.y = gfx.y + 26
+  gfx.set(0.7, 0.9, 0.7, 1)
+  local preview = lyric_text
+  if preview == "" then
+    preview = "(ファイルが空です)"
+  else
+    -- 先頭数行だけ簡易プレビュー
+    local max_lines = 4
+    local lines = {}
+    for line in (preview .. "\n"):gmatch("([^\n]*)\n") do
+      lines[#lines + 1] = line
+      if #lines >= max_lines then break end
+    end
+    preview = table.concat(lines, "\n")
+  end
+  gfx.drawstr("プレビュー:\n" .. preview)
+
+  gfx.update()
+
+  -- ボタンクリック処理（左クリックの立ち上がりを検出）
+  local mx, my = gfx.mouse_x, gfx.mouse_y
+  local mcap = gfx.mouse_cap
+  if (last_mouse_cap & 1) == 0 and (mcap & 1) == 1 then
+    if mx >= btn_x and mx <= (btn_x + btn_w)
+       and my >= btn_y and my <= (btn_y + btn_h) then
+      local created = ensure_lyrics_file()
+      if created then
+        -- ここで即座に読み込んでおく
+        lyric_text = read_lyrics_file()
+        update_lyric_chars()
+        last_lyric_text = lyric_text
+        last_note_count = -1
+      end
+    end
+  end
+  last_mouse_cap = mcap
+
+  -- 停止したいときは「ウィンドウを閉じる」「Esc」、
+  -- または「Actions → Terminate instances of script」等で止めてください。
   reaper.defer(main_loop)
 end
 
