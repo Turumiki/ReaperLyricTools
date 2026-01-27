@@ -125,9 +125,9 @@ local function ensure_lyrics_file()
   return false
 end
 
--- 歌詞テキストが変わったときに文字配列を更新
-local function update_lyric_chars()
-  local normalized = lyric_text:gsub("\r\n", "\n"):gsub("\r", "\n")
+-- 入力テキストから歌詞ユニット配列（拗音・促音マージ済み）を作成
+local function build_lyric_units_from_text(text)
+  local normalized = text:gsub("\r\n", "\n"):gsub("\r", "\n")
   -- ノート数に対応させるため、改行は歌詞割り当てからは除外（見た目用のみ）
   normalized = normalized:gsub("\n", "")
   local chars = utf8_to_chars(normalized)
@@ -153,7 +153,12 @@ local function update_lyric_chars()
     end
   end
 
-  lyric_chars = units
+  return units
+end
+
+-- 歌詞テキストが変わったときに文字配列を更新
+local function update_lyric_chars()
+  lyric_chars = build_lyric_units_from_text(lyric_text)
 end
 
 ------------------------------------------------------------
@@ -341,6 +346,18 @@ local function main_loop()
   gfx.y = btn_y + 4
   gfx.drawstr("TXTファイルを生成")
 
+  -- 「挿入」ボタン（TXTボタンの右隣）
+  local ins_btn_w, ins_btn_h = 120, 22
+  local ins_btn_x = btn_x + btn_w + 10
+  local ins_btn_y = btn_y
+
+  gfx.set(0.3, 0.3, 0.3, 1)
+  gfx.rect(ins_btn_x, ins_btn_y, ins_btn_w, ins_btn_h, 1)
+  gfx.set(1, 1, 1, 1)
+  gfx.x = ins_btn_x + 10
+  gfx.y = ins_btn_y + 4
+  gfx.drawstr("挿入 (1行)")
+
   gfx.update()
 
   -- ボタンクリック処理（左クリックの立ち上がりを検出）
@@ -349,13 +366,76 @@ local function main_loop()
   if (last_mouse_cap & 1) == 0 and (mcap & 1) == 1 then
     if mx >= btn_x and mx <= (btn_x + btn_w)
        and my >= btn_y and my <= (btn_y + btn_h) then
+      -- TXTファイルを生成
       local created = ensure_lyrics_file()
       if created then
-        -- ここで即座に読み込んでおく
         lyric_text = read_lyrics_file()
         update_lyric_chars()
         last_lyric_text = lyric_text
         last_note_count = -1
+      end
+    elseif mx >= ins_btn_x and mx <= (ins_btn_x + ins_btn_w)
+       and my >= ins_btn_y and my <= (ins_btn_y + ins_btn_h) then
+      -- 挿入ボタン: 1行入力して、テキストファイルに挿入のみ行う
+      local ok, ret = reaper.GetUserInputs(
+        "次に挿入される歌詞を追加",
+        1,
+        "挿入する文字（1行・数文字を推奨）:",
+        ""
+      )
+      if ok and ret ~= "" then
+        -- 歌詞ユニット配列が未構築なら構築
+        if not lyric_chars or #lyric_chars == 0 then
+          lyric_text = read_lyrics_file()
+          update_lyric_chars()
+          last_lyric_text = lyric_text
+        end
+
+        -- アクティブテイクから現在のノート数を取得
+        local editor = reaper.MIDIEditor_GetActive()
+        local note_count = 0
+        if editor then
+          local take = reaper.MIDIEditor_GetTake(editor)
+          if take then
+            local _, nc = reaper.MIDI_CountEvts(take)
+            note_count = nc or 0
+          end
+        end
+
+        -- 挿入テキストをユニット配列に変換
+        local insert_units = build_lyric_units_from_text(ret)
+
+        -- 既存ユニットに対して、現在のノート数位置に挿入
+        local new_units = {}
+        local total_units = (#lyric_chars)
+        local insert_pos = math.min(math.max(note_count, 0), total_units)
+
+        for i = 1, insert_pos do
+          table.insert(new_units, lyric_chars[i])
+        end
+        for i = 1, #insert_units do
+          table.insert(new_units, insert_units[i])
+        end
+        for i = insert_pos + 1, total_units do
+          table.insert(new_units, lyric_chars[i])
+        end
+
+        lyric_chars = new_units
+
+        -- ユニット配列からテキストを再構成してファイルに書き戻す（改行なし・直列）
+        local new_text = table.concat(lyric_chars, "")
+        local f = io.open(lyrics_file_path, "w")
+        if f then
+          f:write(new_text)
+          f:close()
+        end
+
+        -- 内部状態も更新
+        lyric_text = new_text
+        last_lyric_text = lyric_text
+        -- 歌詞が変わったので、ノート配列が安定したタイミングで再反映される
+        last_note_signature = nil
+        last_note_change_time = 0
       end
     end
   end
