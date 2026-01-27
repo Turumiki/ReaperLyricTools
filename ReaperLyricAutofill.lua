@@ -391,24 +391,41 @@ local function main_loop()
           last_lyric_text = lyric_text
         end
 
-        -- アクティブテイクから現在のノート数を取得
+        -- アクティブテイクから現在のノート情報を取得
         local editor = reaper.MIDIEditor_GetActive()
         local note_count = 0
+        local last_selected_note_index = nil
         if editor then
           local take = reaper.MIDIEditor_GetTake(editor)
           if take then
             local _, nc = reaper.MIDI_CountEvts(take)
             note_count = nc or 0
+            -- 選択されているノートのうち、インデックスが最大のものを探す
+            for i = 0, note_count - 1 do
+              local ok, sel = reaper.MIDI_GetNote(take, i)
+              if ok and sel then
+                last_selected_note_index = i
+              end
+            end
           end
         end
 
         -- 挿入テキストをユニット配列に変換
         local insert_units = build_lyric_units_from_text(ret)
 
-        -- 既存ユニットに対して、現在のノート数位置に挿入
+        -- 既存ユニットに対して、挿入位置を決定
         local new_units = {}
         local total_units = (#lyric_chars)
-        local insert_pos = math.min(math.max(note_count, 0), total_units)
+        -- 挿入位置:
+        -- - ノートが選択されていれば「最後に選択されているノートの次」
+        -- - 何も選択されていなければ「既存ノートの末尾の次」
+        local base_pos
+        if last_selected_note_index ~= nil then
+          base_pos = last_selected_note_index + 1
+        else
+          base_pos = note_count
+        end
+        local insert_pos = math.min(math.max(base_pos, 0), total_units)
 
         for i = 1, insert_pos do
           table.insert(new_units, lyric_chars[i])
