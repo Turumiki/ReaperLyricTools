@@ -335,7 +335,7 @@ local function main_loop()
   gfx.drawstr(upcoming_preview or "")
 
   -- TXTファイル作成ボタン（左下）
-  local btn_w, btn_h = 160, 22
+  local btn_w, btn_h = 140, 22
   local btn_x = 10
   local btn_y = gfx.h - btn_h - 10
 
@@ -347,7 +347,7 @@ local function main_loop()
   gfx.drawstr("フォルダを開く")
 
   -- 「挿入」ボタン（TXTボタンの右隣）
-  local ins_btn_w, ins_btn_h = 120, 22
+  local ins_btn_w, ins_btn_h = 110, 22
   local ins_btn_x = btn_x + btn_w + 10
   local ins_btn_y = btn_y
 
@@ -357,6 +357,18 @@ local function main_loop()
   gfx.x = ins_btn_x + 10
   gfx.y = ins_btn_y + 4
   gfx.drawstr("挿入 (1行)")
+
+  -- 「削除」ボタン（挿入ボタンの右隣）
+  local del_btn_w, del_btn_h = 110, 22
+  local del_btn_x = ins_btn_x + ins_btn_w + 10
+  local del_btn_y = btn_y
+
+  gfx.set(0.3, 0.3, 0.3, 1)
+  gfx.rect(del_btn_x, del_btn_y, del_btn_w, del_btn_h, 1)
+  gfx.set(1, 1, 1, 1)
+  gfx.x = del_btn_x + 10
+  gfx.y = del_btn_y + 4
+  gfx.drawstr("削除 (ノート)")
 
   gfx.update()
 
@@ -459,6 +471,76 @@ local function main_loop()
         -- 歌詞が変わったので、ノート配列が安定したタイミングで再反映される
         last_note_signature = nil
         last_note_change_time = 0
+      end
+    elseif mx >= del_btn_x and mx <= (del_btn_x + del_btn_w)
+       and my >= del_btn_y and my <= (del_btn_y + del_btn_h) then
+      -- 削除ボタン: 次に挿入される位置から、指定ノート数ぶん歌詞ユニットを削除
+      local ok, ret = reaper.GetUserInputs(
+        "歌詞ユニットの削除",
+        1,
+        "削除するノート数（整数、例: 1〜10）:",
+        "1"
+      )
+      if ok and ret ~= "" then
+        local count = tonumber(ret)
+        if count and count > 0 then
+          -- 歌詞ユニット配列が未構築なら構築
+          if not lyric_chars or #lyric_chars == 0 then
+            lyric_text = read_lyrics_file()
+            update_lyric_chars()
+            last_lyric_text = lyric_text
+          end
+
+          local editor = reaper.MIDIEditor_GetActive()
+          local note_count = 0
+          local last_selected_note_index = nil
+          if editor then
+            local take = reaper.MIDIEditor_GetTake(editor)
+            if take then
+              local _, nc = reaper.MIDI_CountEvts(take)
+              note_count = nc or 0
+              for i = 0, note_count - 1 do
+                local ok_note, sel = reaper.MIDI_GetNote(take, i)
+                if ok_note and sel then
+                  last_selected_note_index = i
+                end
+              end
+            end
+          end
+
+          local total_units = #lyric_chars
+          local base_pos
+          if last_selected_note_index ~= nil then
+            base_pos = last_selected_note_index + 1
+          else
+            base_pos = note_count
+          end
+          -- 削除開始位置（1-based）
+          local del_start = math.min(math.max(base_pos + 1, 1), total_units + 1)
+          local del_end = math.min(del_start - 1 + count, total_units)
+
+          if del_start <= total_units and del_start <= del_end then
+            local new_units = {}
+            for i = 1, total_units do
+              if i < del_start or i > del_end then
+                table.insert(new_units, lyric_chars[i])
+              end
+            end
+            lyric_chars = new_units
+
+            local new_text = table.concat(lyric_chars, "")
+            local f = io.open(lyrics_file_path, "w")
+            if f then
+              f:write(new_text)
+              f:close()
+            end
+
+            lyric_text = new_text
+            last_lyric_text = lyric_text
+            last_note_signature = nil
+            last_note_change_time = 0
+          end
+        end
       end
     end
   end
