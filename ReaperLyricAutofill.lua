@@ -129,7 +129,30 @@ local function update_lyric_chars()
   local normalized = lyric_text:gsub("\r\n", "\n"):gsub("\r", "\n")
   -- ノート数に対応させるため、改行は歌詞割り当てからは除外（見た目用のみ）
   normalized = normalized:gsub("\n", "")
-  lyric_chars = utf8_to_chars(normalized)
+  local chars = utf8_to_chars(normalized)
+
+  -- 日本語の拗音・促音など（小さい仮名）を直前の文字とまとめて1音節として扱う
+  -- 例: 「き」「ょ」 -> 「きょ」
+  local small_kana = {
+    ["ぁ"]=true, ["ぃ"]=true, ["ぅ"]=true, ["ぇ"]=true, ["ぉ"]=true,
+    ["ゃ"]=true, ["ゅ"]=true, ["ょ"]=true,
+    ["ゎ"]=true, ["っ"]=true,
+    ["ァ"]=true, ["ィ"]=true, ["ゥ"]=true, ["ェ"]=true, ["ォ"]=true,
+    ["ャ"]=true, ["ュ"]=true, ["ョ"]=true, ["ヮ"]=true, ["ッ"]=true
+  }
+
+  local units = {}
+  for i = 1, #chars do
+    local ch = chars[i]
+    if small_kana[ch] and #units > 0 then
+      -- 直前の音節に結合
+      units[#units] = units[#units] .. ch
+    else
+      table.insert(units, ch)
+    end
+  end
+
+  lyric_chars = units
 end
 
 ------------------------------------------------------------
