@@ -438,6 +438,18 @@ local function main_loop()
   gfx.y = del_btn_y + 4
   gfx.drawstr("削除 (ノート)")
 
+  -- 「変更」ボタン（削除ボタンの右隣）
+  local edit_btn_w, edit_btn_h = 110, 22
+  local edit_btn_x = del_btn_x + del_btn_w + 10
+  local edit_btn_y = btn_y
+
+  gfx.set(0.3, 0.3, 0.3, 1)
+  gfx.rect(edit_btn_x, edit_btn_y, edit_btn_w, edit_btn_h, 1)
+  gfx.set(1, 1, 1, 1)
+  gfx.x = edit_btn_x + 10
+  gfx.y = edit_btn_y + 4
+  gfx.drawstr("変更 (選択)")
+
   gfx.update()
 
   -- ボタンクリック処理（左クリックの立ち上がりを検出）
@@ -642,6 +654,140 @@ local function main_loop()
             last_lyric_text = lyric_text
             last_note_signature = nil
             last_note_change_time = 0
+          end
+        end
+      end
+    elseif mx >= edit_btn_x and mx <= (edit_btn_x + edit_btn_w)
+       and my >= edit_btn_y and my <= (edit_btn_y + edit_btn_h) then
+      -- 変更ボタン: 選択されたノートの歌詞を編集
+      local editor = reaper.MIDIEditor_GetActive()
+      if not editor then
+        reaper.ShowMessageBox("MIDIエディタが開かれていません。", "ReaperLyricTools - エラー", 0)
+      else
+        local take = reaper.MIDIEditor_GetTake(editor)
+        if not take then
+          reaper.ShowMessageBox("アクティブなMIDIテイクがありません。", "ReaperLyricTools - エラー", 0)
+        else
+          -- 選択されたノートを取得
+          local _, note_count, _, text_count = reaper.MIDI_CountEvts(take)
+          local selected_notes = {}
+          local selected_note_indices = {}
+          
+          for i = 0, note_count - 1 do
+            local ok, sel = reaper.MIDI_GetNote(take, i)
+            if ok and sel then
+              table.insert(selected_note_indices, i)
+              local ok_note, _, _, startppq = reaper.MIDI_GetNote(take, i)
+              if ok_note then
+                -- その位置にある歌詞イベント（type=5）を探す
+                local lyric_text_for_note = ""
+                for j = 0, text_count - 1 do
+                  local retval, _, _, ppqpos, typ, msg = reaper.MIDI_GetTextSysexEvt(
+                    take, j, true, true, 0, 0, ""
+                  )
+                  if retval and typ == 5 and math.abs(ppqpos - startppq) < 10 then
+                    lyric_text_for_note = msg
+                    break
+                  end
+                end
+                table.insert(selected_notes, {
+                  index = i,
+                  startppq = startppq,
+                  lyric = lyric_text_for_note
+                })
+              end
+            end
+          end
+          
+          if #selected_notes == 0 then
+            reaper.ShowMessageBox("ノートが選択されていません。", "ReaperLyricTools - エラー", 0)
+          else
+            -- 選択されたノートの歌詞を結合（デフォルト値として使用）
+            local default_lyrics = {}
+            for i = 1, #selected_notes do
+              table.insert(default_lyrics, selected_notes[i].lyric or "")
+            end
+            local default_text = table.concat(default_lyrics, "")
+            
+            -- ダイアログで編集
+            local ok, ret = reaper.GetUserInputs(
+              "選択ノートの歌詞を変更 (" .. #selected_notes .. "個のノート)",
+              1,
+              "歌詞（" .. #selected_notes .. "文字推奨、多い場合は切り捨て、少ない場合は残りはそのまま）:",
+              default_text
+            )
+            
+            if ok then
+              -- 歌詞ユニット配列が未構築なら構築
+              if not lyric_chars or #lyric_chars == 0 then
+                lyric_text = read_lyrics_file()
+                update_lyric_chars()
+                last_lyric_text = lyric_text
+              end
+              
+              -- 入力された文字列をユニット配列に変換
+              local edit_units = build_lyric_units_from_text(ret)
+              local edit_count = math.min(#edit_units, #selected_notes)
+              
+              -- 選択されたノートのインデックスに対応する歌詞ユニット配列の位置を更新
+              local new_units = {}
+              for i = 1, #lyric_chars do
+                new_units[i] = lyric_chars[i]
+              end
+              
+              -- 選択されたノートの位置に対応する歌詞を更新
+              for i = 1, edit_count do
+                local note_index = selected_notes[i].index
+                if note_index + 1 <= #new_units then
+                  new_units[note_index + 1] = edit_units[i]
+                end
+              end
+              
+              lyric_chars = new_units
+              
+              -- ユニット配列からテキストを再構成してファイルに書き戻す
+              local new_text = table.concat(lyric_chars, "")
+              local f = io.open(lyrics_file_path, "w")
+              if f then
+                f:write(new_text)
+                f:close()
+              end
+              
+              -- 内部状態も更新
+              lyric_text = new_text
+              last_lyric_text = lyric_text
+              last_note_signature = nil
+              last_note_change_time = 0
+              
+              -- MIDIテイクの歌詞イベントも直接更新（即座に反映）
+              reaper.MIDI_DisableSort(take)
+              -- 既存の歌詞イベント（type=5）を削除
+              for i = text_count - 1, 0, -1 do
+                local retval, _, _, ppqpos, typ, msg = reaper.MIDI_GetTextSysexEvt(
+                  take, i, true, true, 0, 0, ""
+                )
+                if retval and typ == 5 then
+                  reaper.MIDI_DeleteTextSysexEvt(take, i)
+                end
+              end
+              -- 新しい歌詞を挿入
+              local _, note_count_after = reaper.MIDI_CountEvts(take)
+              for i = 0, note_count_after - 1 do
+                local ok_note, _, _, startppq, endppq = reaper.MIDI_GetNote(take, i)
+                if ok_note and i + 1 <= #lyric_chars then
+                  local ch = lyric_chars[i + 1] or ""
+                  reaper.MIDI_InsertTextSysexEvt(
+                    take,
+                    false,
+                    false,
+                    startppq,
+                    5,
+                    ch
+                  )
+                end
+              end
+              reaper.MIDI_Sort(take)
+            end
           end
         end
       end
