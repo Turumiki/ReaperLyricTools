@@ -344,7 +344,7 @@ local function main_loop()
   gfx.set(1, 1, 1, 1)
   gfx.x = btn_x + 10
   gfx.y = btn_y + 4
-  gfx.drawstr("TXTファイルを生成")
+  gfx.drawstr("フォルダを開く")
 
   -- 「挿入」ボタン（TXTボタンの右隣）
   local ins_btn_w, ins_btn_h = 120, 22
@@ -366,13 +366,19 @@ local function main_loop()
   if (last_mouse_cap & 1) == 0 and (mcap & 1) == 1 then
     if mx >= btn_x and mx <= (btn_x + btn_w)
        and my >= btn_y and my <= (btn_y + btn_h) then
-      -- TXTファイルを生成
-      local created = ensure_lyrics_file()
-      if created then
-        lyric_text = read_lyrics_file()
-        update_lyric_chars()
-        last_lyric_text = lyric_text
-        last_note_count = -1
+      -- プロジェクトフォルダを開く
+      -- SWS の CF_ShellExecute があればそれを使う（既定のファイラで開く）
+      if reaper.APIExists and reaper.APIExists("CF_ShellExecute") then
+        reaper.CF_ShellExecute(project_dir)
+      else
+        -- SWS が無い場合はパスだけ表示
+        reaper.ShowMessageBox(
+          "プロジェクトフォルダのパス:\n\n" ..
+          project_dir ..
+          "\n\nこのパスを Finder / エクスプローラ等で開いてください。",
+          "ReaperLyricTools - フォルダを開く",
+          0
+        )
       end
     elseif mx >= ins_btn_x and mx <= (ins_btn_x + ins_btn_w)
        and my >= ins_btn_y and my <= (ins_btn_y + ins_btn_h) then
