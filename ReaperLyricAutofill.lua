@@ -40,6 +40,74 @@ local function utf8_to_chars(str)
   end
   
   ------------------------------------------------------------
+  -- 日本語の仮名から母音を抽出する関数
+  ------------------------------------------------------------
+local function extract_vowel(text)
+  if not text or text == "" then
+    return ""
+  end
+  
+  -- 最後の文字を取得（拗音・促音対応）
+  local chars = utf8_to_chars(text)
+  if #chars == 0 then
+    return ""
+  end
+  
+  local last_char = chars[#chars]
+  
+  -- 母音マッピングテーブル
+  local vowel_map = {
+    -- あ行
+    ["あ"] = "あ", ["い"] = "い", ["う"] = "う", ["え"] = "え", ["お"] = "お",
+    ["ア"] = "あ", ["イ"] = "い", ["ウ"] = "う", ["エ"] = "え", ["オ"] = "お",
+    -- か行
+    ["か"] = "あ", ["き"] = "い", ["く"] = "う", ["け"] = "え", ["こ"] = "お",
+    ["カ"] = "あ", ["キ"] = "い", ["ク"] = "う", ["ケ"] = "え", ["コ"] = "お",
+    -- さ行
+    ["さ"] = "あ", ["し"] = "い", ["す"] = "う", ["せ"] = "え", ["そ"] = "お",
+    ["サ"] = "あ", ["シ"] = "い", ["ス"] = "う", ["セ"] = "え", ["ソ"] = "お",
+    -- た行
+    ["た"] = "あ", ["ち"] = "い", ["つ"] = "う", ["て"] = "え", ["と"] = "お",
+    ["タ"] = "あ", ["チ"] = "い", ["ツ"] = "う", ["テ"] = "え", ["ト"] = "お",
+    -- な行
+    ["な"] = "あ", ["に"] = "い", ["ぬ"] = "う", ["ね"] = "え", ["の"] = "お",
+    ["ナ"] = "あ", ["ニ"] = "い", ["ヌ"] = "う", ["ネ"] = "え", ["ノ"] = "お",
+    -- は行
+    ["は"] = "あ", ["ひ"] = "い", ["ふ"] = "う", ["へ"] = "え", ["ほ"] = "お",
+    ["ハ"] = "あ", ["ヒ"] = "い", ["フ"] = "う", ["ヘ"] = "え", ["ホ"] = "お",
+    -- ま行
+    ["ま"] = "あ", ["み"] = "い", ["む"] = "う", ["め"] = "え", ["も"] = "お",
+    ["マ"] = "あ", ["ミ"] = "い", ["ム"] = "う", ["メ"] = "え", ["モ"] = "お",
+    -- や行
+    ["や"] = "あ", ["ゆ"] = "う", ["よ"] = "お",
+    ["ヤ"] = "あ", ["ユ"] = "う", ["ヨ"] = "お",
+    -- ら行
+    ["ら"] = "あ", ["り"] = "い", ["る"] = "う", ["れ"] = "え", ["ろ"] = "お",
+    ["ラ"] = "あ", ["リ"] = "い", ["ル"] = "う", ["レ"] = "え", ["ロ"] = "お",
+    -- わ行
+    ["わ"] = "あ", ["を"] = "お",
+    ["ワ"] = "あ", ["ヲ"] = "お",
+    -- 濁音: が行
+    ["が"] = "あ", ["ぎ"] = "い", ["ぐ"] = "う", ["げ"] = "え", ["ご"] = "お",
+    ["ガ"] = "あ", ["ギ"] = "い", ["グ"] = "う", ["ゲ"] = "え", ["ゴ"] = "お",
+    -- 濁音: ざ行
+    ["ざ"] = "あ", ["じ"] = "い", ["ず"] = "う", ["ぜ"] = "え", ["ぞ"] = "お",
+    ["ザ"] = "あ", ["ジ"] = "い", ["ズ"] = "う", ["ゼ"] = "え", ["ゾ"] = "お",
+    -- 濁音: だ行
+    ["だ"] = "あ", ["ぢ"] = "い", ["づ"] = "う", ["で"] = "え", ["ど"] = "お",
+    ["ダ"] = "あ", ["ヂ"] = "い", ["ヅ"] = "う", ["デ"] = "え", ["ド"] = "お",
+    -- 濁音: ば行
+    ["ば"] = "あ", ["び"] = "い", ["ぶ"] = "う", ["べ"] = "え", ["ぼ"] = "お",
+    ["バ"] = "あ", ["ビ"] = "い", ["ブ"] = "う", ["ベ"] = "え", ["ボ"] = "お",
+    -- 半濁音: ぱ行
+    ["ぱ"] = "あ", ["ぴ"] = "い", ["ぷ"] = "う", ["ぺ"] = "え", ["ぽ"] = "お",
+    ["パ"] = "あ", ["ピ"] = "い", ["プ"] = "う", ["ペ"] = "え", ["ポ"] = "お",
+  }
+  
+  return vowel_map[last_char] or ""
+end
+
+  ------------------------------------------------------------
   -- 歌詞を現在のテイクのノートに流し込む処理
   ------------------------------------------------------------
 local function apply_lyrics_to_notes(take, lyric_chars)
@@ -395,38 +463,73 @@ local function main_loop()
     elseif mx >= ins_btn_x and mx <= (ins_btn_x + ins_btn_w)
        and my >= ins_btn_y and my <= (ins_btn_y + ins_btn_h) then
       -- 挿入ボタン: 1行入力して、テキストファイルに挿入のみ行う
-      local ok, ret = reaper.GetUserInputs(
-        "次に挿入される歌詞を追加",
-        1,
-        "挿入する文字（1行・数文字を推奨）:",
-        ""
-      )
-      if ok and ret ~= "" then
-        -- 歌詞ユニット配列が未構築なら構築
-        if not lyric_chars or #lyric_chars == 0 then
-          lyric_text = read_lyrics_file()
-          update_lyric_chars()
-          last_lyric_text = lyric_text
-        end
+      -- 歌詞ユニット配列が未構築なら構築
+      if not lyric_chars or #lyric_chars == 0 then
+        lyric_text = read_lyrics_file()
+        update_lyric_chars()
+        last_lyric_text = lyric_text
+      end
 
-        -- アクティブテイクから現在のノート情報を取得
-        local editor = reaper.MIDIEditor_GetActive()
-        local note_count = 0
-        local last_selected_note_index = nil
-        if editor then
-          local take = reaper.MIDIEditor_GetTake(editor)
-          if take then
-            local _, nc = reaper.MIDI_CountEvts(take)
-            note_count = nc or 0
-            -- 選択されているノートのうち、インデックスが最大のものを探す
-            for i = 0, note_count - 1 do
-              local ok, sel = reaper.MIDI_GetNote(take, i)
-              if ok and sel then
-                last_selected_note_index = i
+      -- アクティブテイクから現在のノート情報を取得（デフォルト値決定のため）
+      local editor = reaper.MIDIEditor_GetActive()
+      local note_count = 0
+      local last_selected_note_index = nil
+      local selected_note_lyric = nil
+      if editor then
+        local take = reaper.MIDIEditor_GetTake(editor)
+        if take then
+          local _, nc, _, text_count = reaper.MIDI_CountEvts(take)
+          note_count = nc or 0
+          -- 選択されているノートのうち、インデックスが最大のものを探す
+          for i = 0, note_count - 1 do
+            local ok, sel = reaper.MIDI_GetNote(take, i)
+            if ok and sel then
+              last_selected_note_index = i
+              -- 選択されたノートの位置を取得
+              local ok_note, _, _, startppq = reaper.MIDI_GetNote(take, i)
+              if ok_note then
+                -- その位置にある歌詞イベント（type=5）を探す
+                for j = 0, text_count - 1 do
+                  local retval, _, _, ppqpos, typ, msg = reaper.MIDI_GetTextSysexEvt(
+                    take, j, true, true, 0, 0, ""
+                  )
+                  if retval and typ == 5 and math.abs(ppqpos - startppq) < 10 then
+                    -- 同じ位置（±10 ticks以内）の歌詞を見つけた
+                    selected_note_lyric = msg
+                    break
+                  end
+                end
               end
             end
           end
         end
+      end
+
+      -- デフォルト値: 選択されたノートの歌詞の母音、なければ次に挿入される予定の歌詞の最初のユニット
+      local default_value = ""
+      if selected_note_lyric and selected_note_lyric ~= "" then
+        -- 選択されたノートの歌詞から母音を抽出
+        default_value = extract_vowel(selected_note_lyric)
+      elseif lyric_chars and #lyric_chars > 0 then
+        local base_pos
+        if last_selected_note_index ~= nil then
+          base_pos = last_selected_note_index + 1
+        else
+          base_pos = note_count
+        end
+        local next_index = base_pos + 1
+        if next_index <= #lyric_chars then
+          default_value = lyric_chars[next_index] or ""
+        end
+      end
+
+      local ok, ret = reaper.GetUserInputs(
+        "次に挿入される歌詞を追加",
+        1,
+        "挿入する文字（1行・数文字を推奨）:",
+        default_value
+      )
+      if ok and ret ~= "" then
 
         -- 挿入テキストをユニット配列に変換
         local insert_units = build_lyric_units_from_text(ret)
