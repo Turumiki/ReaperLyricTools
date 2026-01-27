@@ -92,6 +92,7 @@ local last_mouse_cap = 0           -- クリック検出用（gfxウィンドウ
 local last_js_mouse_state = 0      -- JS_Mouse_GetState の前フレーム値
 local last_note_signature = nil    -- ノート配列のシグネチャ（位置・長さ・ピッチを含む）
 local last_note_change_time = 0    -- 最後にノート配列が変化した時刻
+local upcoming_preview = ""        -- 次に挿入される予定の歌詞プレビュー（最大10ノート分）
 
 -- 歌詞ファイルのパス（現在のプロジェクトフォルダ）
 local project_dir = reaper.GetProjectPath("")
@@ -258,7 +259,34 @@ local function main_loop()
 
         -- is_editing フラグをウィンドウ描画で使うために保存
         _G.__reaper_lyrictools_is_editing = is_editing
+
+        -- 次に挿入される予定の歌詞（10ノート分）を更新
+        local start_idx = note_count + 1
+        local preview_units = {}
+        local max_idx = math.min(start_idx + 9, #lyric_chars)
+        for i = start_idx, max_idx do
+          table.insert(preview_units, lyric_chars[i])
+        end
+        if #preview_units == 0 then
+          upcoming_preview = "(これ以上の歌詞はありません)"
+        else
+          upcoming_preview = table.concat(preview_units, " | ")
+        end
       end
+    end
+  end
+
+  -- エディタやノートがない場合のプレビュー（歌詞全体の先頭から）
+  if (not editor or not lyric_chars or #lyric_chars == 0) then
+    if not lyric_chars or #lyric_chars == 0 then
+      upcoming_preview = "(歌詞が読み込まれていません)"
+    else
+      local preview_units = {}
+      local max_idx = math.min(10, #lyric_chars)
+      for i = 1, max_idx do
+        table.insert(preview_units, lyric_chars[i])
+      end
+      upcoming_preview = table.concat(preview_units, " | ")
     end
   end
 
@@ -290,6 +318,16 @@ local function main_loop()
     gfx.set(0.4, 0.9, 0.4, 1)
     gfx.drawstr("待機中: 歌詞は最新の状態です。")
   end
+
+  -- 次に入る歌詞プレビュー（最大10ノート分）
+  gfx.y = gfx.y + 16
+  gfx.x = 10
+  gfx.set(0.8, 0.8, 0.8, 1)
+  gfx.drawstr("次に挿入される歌詞 (最大10ノート): ")
+  gfx.y = gfx.y + 16
+  gfx.x = 10
+  gfx.set(1, 1, 1, 1)
+  gfx.drawstr(upcoming_preview or "")
 
   -- TXTファイル作成ボタン（左下）
   local btn_w, btn_h = 160, 22
