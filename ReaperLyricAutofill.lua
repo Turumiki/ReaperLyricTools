@@ -138,7 +138,7 @@ end
 
 local last_check_time = 0
 local check_interval = 0.2  -- 歌詞ファイル監視の更新間隔（秒）
-local note_apply_delay = 2.0 -- 「ノート編集が落ち着いてから」歌詞を反映する待ち時間（秒）
+local note_apply_delay = 0.6 -- 「ノート編集が落ち着いてから」歌詞を反映する待ち時間（秒）
 local has_js_mouse = reaper.APIExists and reaper.APIExists("JS_Mouse_GetState") or false
 
 local function main_loop()
@@ -173,8 +173,9 @@ local function main_loop()
     end
   end
 
-  -- MIDI処理: ノート数だけでなく、位置・長さ・ピッチなども含めて
-  -- 「ノート配列が変化してから一定時間編集が止まったら」一度だけ歌詞を反映する
+-- MIDI処理: ノート数だけでなく、位置・長さ・ピッチなども含めて
+-- 「ノート配列が変化してから一定時間編集が止まったら」一度だけ歌詞を反映する。
+-- さらに JS_ReaScriptAPI があれば、マウス左ボタン押下中（ドラッグ中）は絶対に反映しない。
   local editor = reaper.MIDIEditor_GetActive()
   if editor and lyric_chars and #lyric_chars > 0 then
     local take = reaper.MIDIEditor_GetTake(editor)
@@ -183,6 +184,20 @@ local function main_loop()
       if note_count > 0 then
         -- 現在のノート配列が「編集中かどうか」のフラグ
         local is_editing = false
+
+        -- JS_ReaScriptAPI があれば、まずマウス左ボタンの状態を確認
+        local mouse_down = false
+        if has_js_mouse then
+          local state = reaper.JS_Mouse_GetState(1) or 0 -- 1 = 左ボタン
+          last_js_mouse_state = state
+          mouse_down = (state & 1) == 1
+        end
+
+        if mouse_down then
+          -- ドラッグ中はノートシグネチャも idle タイマーも更新せず、ひたすら「編集中」とみなす
+          _G.__reaper_lyrictools_is_editing = true
+          goto draw_gui
+        end
 
         -- ノート配列の簡易シグネチャを計算（位置・長さ・ピッチを含める）
         local sig = 0
@@ -202,16 +217,8 @@ local function main_loop()
         else
           -- ノート配列が変わっていない状態が note_apply_delay 秒続いたら歌詞を反映
           local idle_time = (last_note_change_time > 0) and (now - last_note_change_time) or 0
-          -- JS_ReaScriptAPI があれば、マウス左ボタン押下中は反映しない
-          local mouse_down = false
-          if has_js_mouse then
-            local state = reaper.JS_Mouse_GetState(0) or 0
-            last_js_mouse_state = state
-            -- 最下位ビットが左ボタン
-            mouse_down = (state % 2) == 1
-          end
 
-          if not mouse_down and last_note_change_time > 0 and idle_time >= note_apply_delay then
+          if last_note_change_time > 0 and idle_time >= note_apply_delay then
             reaper.MIDI_DisableSort(take)
             apply_lyrics_to_notes(take, lyric_chars)
             reaper.MIDI_Sort(take)
@@ -219,7 +226,7 @@ local function main_loop()
             last_note_change_time = 0
             is_editing = false
           else
-            -- まだ待機時間内、またはマウスドラッグ中なので「編集中」とみなす
+            -- まだ待機時間内なので「編集中」とみなす
             if idle_time > 0 then
               is_editing = true
             end
@@ -232,6 +239,7 @@ local function main_loop()
     end
   end
 
+::draw_gui::
   -- ウィンドウ描画（状態表示だけ・編集は外部テキストエディタ）
   gfx.set(0.1, 0.1, 0.1, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
