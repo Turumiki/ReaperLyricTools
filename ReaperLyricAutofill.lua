@@ -216,13 +216,12 @@ local function sanitize_track_name(name)
   return (name:gsub("[/\\:%*%?\"<>|]", "_"):gsub("%s+", " "):match("^%s*(.-)%s*$") or "Track")
 end
 
-------------------------------------------------------------
 -- 歌詞対象トラックの判別（ドラム・ピアノ・Reference 等を除外したい場合用）
 ------------------------------------------------------------
--- トラック名がこのパターンにマッチするときだけ「歌詞トラック」とみなす。
--- 空文字のときは全 MIDI トラックを歌詞対象にする（従来どおり）。
--- 例: "ボーカル|Vocal|歌詞|.*歌.*" でボーカル系のみ
-local LYRIC_TRACK_PATTERN = ""  -- 空 = 全トラック対象
+-- デフォルトでは「名前に _lyrics を含むトラック」だけを歌詞トラックとみなす。
+-- 例: "Vo_Main_lyrics", "Chorus_lyrics" など。
+-- 空文字にすれば、すべての MIDI トラックを歌詞対象に戻せる。
+local LYRIC_TRACK_PATTERN = "_lyrics"
 
 local function is_lyric_track(take)
   if not take or not reaper.ValidatePtr(take, "MediaItem_Take*") then
