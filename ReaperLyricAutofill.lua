@@ -208,17 +208,72 @@ end
 
 local project_base_name = get_project_base_name()
 
-local lyrics_file_path
-if project_base_name then
-  lyrics_file_path = project_dir .. "/" .. project_base_name .. "_lyrics.txt"
-else
-  -- フォールバック: 従来どおりの固定ファイル名
-  lyrics_file_path = project_dir .. "/ReaperLyricTools_lyrics.txt"
+-- トラック名をファイル名に使うためにサニタイズ（/ \ : * ? " < > | を _ に）
+local function sanitize_track_name(name)
+  if not name or name == "" then
+    return "Track"
+  end
+  return (name:gsub("[/\\:%*%?\"<>|]", "_"):gsub("%s+", " "):match("^%s*(.-)%s*$") or "Track")
 end
 
--- 歌詞ファイル読み込み
-local function read_lyrics_file()
-  local f = io.open(lyrics_file_path, "r")
+------------------------------------------------------------
+-- 歌詞対象トラックの判別（ドラム・ピアノ・Reference 等を除外したい場合用）
+------------------------------------------------------------
+-- トラック名がこのパターンにマッチするときだけ「歌詞トラック」とみなす。
+-- 空文字のときは全 MIDI トラックを歌詞対象にする（従来どおり）。
+-- 例: "ボーカル|Vocal|歌詞|.*歌.*" でボーカル系のみ
+local LYRIC_TRACK_PATTERN = ""  -- 空 = 全トラック対象
+
+local function is_lyric_track(take)
+  if not take or not reaper.ValidatePtr(take, "MediaItem_Take*") then
+    return false
+  end
+  if LYRIC_TRACK_PATTERN == "" or LYRIC_TRACK_PATTERN == nil then
+    return true  -- パターン未設定なら全トラック対象
+  end
+  local track = reaper.GetMediaItemTake_Track(take)
+  if not track then return false end
+  local _, track_name = reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+  track_name = track_name or ""
+  return track_name:find(LYRIC_TRACK_PATTERN) ~= nil
+end
+
+-- テイクに対応する歌詞ファイルパスを返す（複数トラック対応）
+-- take == nil のときは従来どおり 1 ファイル（フォールバック）
+-- 歌詞対象外トラックのときも nil を返す（呼び出し側でフォールバック扱い）
+local function get_lyrics_file_path_for_take(take)
+  local base = project_base_name or "ReaperLyricTools"
+  if not take or not reaper.ValidatePtr(take, "MediaItem_Take*") then
+    if project_base_name then
+      return project_dir .. "/" .. project_base_name .. "_lyrics.txt"
+    end
+    return project_dir .. "/ReaperLyricTools_lyrics.txt"
+  end
+  -- 歌詞対象外トラック（パターン設定時）なら nil → 切り替えしない
+  if not is_lyric_track(take) then
+    return nil
+  end
+  local track = reaper.GetMediaItemTake_Track(take)
+  if not track then
+    return project_dir .. "/" .. base .. "_lyrics.txt"
+  end
+  local _, track_name = reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+  local safe = sanitize_track_name(track_name)
+  if safe == "" then
+    safe = "Track"
+  end
+  return project_dir .. "/" .. base .. "_" .. safe .. "_lyrics.txt"
+end
+
+-- 現在編集中の歌詞ファイルパス（テイク切り替えで更新）
+local current_lyrics_file_path = get_lyrics_file_path_for_take(nil)
+local last_take = nil  -- 前フレームのテイク（切り替え検知用）
+
+-- 歌詞ファイル読み込み（path 省略時は current_lyrics_file_path）
+local function read_lyrics_file(path)
+  local p = path or current_lyrics_file_path
+  if not p or p == "" then return "" end
+  local f = io.open(p, "r")
   if not f then
     return ""
   end
@@ -227,14 +282,16 @@ local function read_lyrics_file()
   return content
 end
 
--- 歌詞ファイルを（なければ）生成
-local function ensure_lyrics_file()
-  local f = io.open(lyrics_file_path, "r")
+-- 歌詞ファイルを（なければ）生成（path 省略時は current_lyrics_file_path）
+local function ensure_lyrics_file(path)
+  local p = path or current_lyrics_file_path
+  if not p or p == "" then return false end
+  local f = io.open(p, "r")
   if f then
     f:close()
     return false -- 既に存在
   end
-  f = io.open(lyrics_file_path, "w")
+  f = io.open(p, "w")
   if f then
     f:write("") -- 空ファイルを作成
     f:close()
@@ -276,11 +333,13 @@ local function apply_lyrics_text_to_all(new_text)
   update_lyric_chars()
   last_lyric_text = lyric_text
 
-  -- TXT ファイルに書き戻し
-  local f = io.open(lyrics_file_path, "w")
-  if f then
-    f:write(lyric_text)
-    f:close()
+  -- TXT ファイルに書き戻し（現在のテイク用パス）
+  if current_lyrics_file_path and current_lyrics_file_path ~= "" then
+    local f = io.open(current_lyrics_file_path, "w")
+    if f then
+      f:write(lyric_text)
+      f:close()
+    end
   end
 
   -- アクティブテイクにも即反映（ノート数ぶんだけ先頭から割り当て）
@@ -454,6 +513,35 @@ local function main_loop()
 
   local now = reaper.time_precise()
 
+  -- 複数トラック対応: テイクが切り替わったら保存→別ファイル読み込み
+  -- 歌詞対象外トラック（LYRIC_TRACK_PATTERN で除外）のときは切り替えしない
+  local editor = reaper.MIDIEditor_GetActive()
+  local current_take = (editor and reaper.MIDIEditor_GetTake(editor)) or nil
+  if current_take ~= last_take then
+    local new_path = get_lyrics_file_path_for_take(current_take)
+    if new_path then
+      -- 現在の歌詞を現在のファイルに保存
+      if current_lyrics_file_path and current_lyrics_file_path ~= "" and lyric_text then
+        local f = io.open(current_lyrics_file_path, "w")
+        if f then
+          f:write(lyric_text)
+          f:close()
+        end
+      end
+      -- 新しいテイク用のパスに切り替え
+      current_lyrics_file_path = new_path
+      ensure_lyrics_file(current_lyrics_file_path)
+      lyric_text = read_lyrics_file(current_lyrics_file_path)
+      update_lyric_chars()
+      last_lyric_text = lyric_text
+      lyric_history = {}
+      lyric_history_index = 0
+      last_note_signature = nil
+      last_note_change_time = 0
+    end
+  end
+  last_take = current_take
+
   -- 一定間隔ごとに歌詞ファイルチェックのみ行う（軽い処理）
   if now - last_check_time >= check_interval then
     last_check_time = now
@@ -472,9 +560,8 @@ local function main_loop()
   -- MIDI処理: ノート数だけでなく、位置・長さ・ピッチなども含めて
   -- 「ノート配列が変化してから一定時間編集が止まったら」一度だけ歌詞を反映する。
   -- さらに JS_ReaScriptAPI があれば、マウス左ボタン押下中（ドラッグ中）は絶対に反映しない。
-  local editor = reaper.MIDIEditor_GetActive()
   if editor and lyric_chars and #lyric_chars > 0 then
-    local take = reaper.MIDIEditor_GetTake(editor)
+    local take = current_take
     if take then
       local _, note_count = reaper.MIDI_CountEvts(take)
       if note_count > 0 then
@@ -577,7 +664,7 @@ local function main_loop()
   gfx.x, gfx.y = ml, mt
   gfx.drawstr("歌詞ファイル: ")
   gfx.set(0.7, 0.9, 0.7, 1)
-  gfx.drawstr(lyrics_file_path)
+  gfx.drawstr(current_lyrics_file_path or "")
 
   gfx.y = gfx.y + lh
   gfx.x = ml
@@ -1038,7 +1125,7 @@ local function init()
   if created then
     reaper.ShowMessageBox(
       "歌詞用テキストファイルを作成しました。\n\n" ..
-      lyrics_file_path ..
+      (current_lyrics_file_path or "") ..
       "\n\nこのファイルをテキストエディタで開いて、日本語歌詞を入力し保存してください。\n" ..
       "保存するたびに、ノートへの歌詞割り当てが自動更新されます。",
       "ReaperLyricTools - 歌詞ファイル作成",
