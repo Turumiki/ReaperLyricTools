@@ -140,13 +140,23 @@ local function apply_lyrics_to_notes(take, lyric_chars)
       end
     end
   
-    local max_notes = math.min(note_count, #lyric_chars)
+    -- 各ノート頭に歌詞1ユニットずつ挿入（改行ユニットはスキップ）
+    local units = lyric_chars or {}
+    local unit_idx = 1
   
-    -- 各ノート頭に歌詞1文字を挿入
-    for i = 0, max_notes - 1 do
+    for i = 0, note_count - 1 do
+      -- 次の「改行以外」のユニットを探す
+      while unit_idx <= #units and units[unit_idx] == "\n" do
+        unit_idx = unit_idx + 1
+      end
+      if unit_idx > #units then
+        break
+      end
+  
       local ok, sel, mut, startppq, endppq, chan, pitch, vel = reaper.MIDI_GetNote(take, i)
       if ok then
-        local ch = lyric_chars[i + 1] or ""
+        local ch = units[unit_idx] or ""
+        unit_idx = unit_idx + 1
         reaper.MIDI_InsertTextSysexEvt(
           take,
           false,  -- selected
@@ -362,13 +372,22 @@ local function apply_lyrics_text_to_all(new_text)
     end
   end
 
-  -- 先頭から順に再割り当て
-  local lc = lyric_chars or {}
-  local max_notes = math.min(note_count, #lc)
-  for i = 0, max_notes - 1 do
+  -- 先頭から順に再割り当て（改行ユニットはスキップ）
+  local units = lyric_chars or {}
+  local unit_idx = 1
+  for i = 0, note_count - 1 do
+    -- 次の「改行以外」のユニットを探す
+    while unit_idx <= #units and units[unit_idx] == "\n" do
+      unit_idx = unit_idx + 1
+    end
+    if unit_idx > #units then
+      break
+    end
+
     local ok_note, _, _, startppq = reaper.MIDI_GetNote(take, i)
     if ok_note then
-      local ch = lc[i + 1] or ""
+      local ch = units[unit_idx] or ""
+      unit_idx = unit_idx + 1
       reaper.MIDI_InsertTextSysexEvt(
         take,
         false,
@@ -384,9 +403,8 @@ end
 
 -- 入力テキストから歌詞ユニット配列（拗音・促音マージ済み）を作成
 local function build_lyric_units_from_text(text)
+  -- 改行はそのまま "\n" としてユニットに含める（見た目用）
   local normalized = text:gsub("\r\n", "\n"):gsub("\r", "\n")
-  -- ノート数に対応させるため、改行は歌詞割り当てからは除外（見た目用のみ）
-  normalized = normalized:gsub("\n", "")
   local chars = utf8_to_chars(normalized)
 
   -- 日本語の拗音・促音など（小さい仮名）を直前の文字とまとめて1音節として扱う
@@ -402,7 +420,10 @@ local function build_lyric_units_from_text(text)
   local units = {}
   for i = 1, #chars do
     local ch = chars[i]
-    if small_kana[ch] and #units > 0 then
+    if ch == "\n" then
+      -- 改行はそのまま 1 ユニットとして保持
+      table.insert(units, ch)
+    elseif small_kana[ch] and #units > 0 then
       -- 直前の音節に結合
       units[#units] = units[#units] .. ch
     else
@@ -411,6 +432,45 @@ local function build_lyric_units_from_text(text)
   end
 
   return units
+end
+
+-- ノートインデックスに対応する「挿入位置（ユニットインデックス）」を求める
+-- last_selected_note_index: 最後に選択されたノートの 0-based インデックス（nil 可）
+-- note_count: テイク内のノート数
+-- units: 歌詞ユニット配列（改行は "\n" ユニットとして含まれる）
+-- 戻り値: 既存ユニットのうち「ここまでをコピーしてから挿入する」位置（0〜#units）
+local function get_insert_unit_pos_after_note(last_selected_note_index, note_count, units)
+  local u = units or {}
+  if #u == 0 then return 0 end
+
+  -- 何個目のノートの「次」に入れたいか（ノートは 0-based なので +1）
+  local target_after
+  if last_selected_note_index ~= nil then
+    target_after = last_selected_note_index + 1
+  else
+    target_after = note_count or 0
+  end
+
+  if target_after <= 0 then
+    return 0
+  end
+
+  local notes_seen = 0
+  local last_unit_idx = #u
+  for i = 1, #u do
+    local ch = u[i]
+    last_unit_idx = i
+    if ch ~= "\n" then
+      notes_seen = notes_seen + 1
+      if notes_seen == target_after then
+        -- このユニットの直後に挿入したいので、ここまでをコピー
+        return i
+      end
+    end
+  end
+
+  -- 既存歌詞よりノート数が多い場合などは末尾に挿入
+  return last_unit_idx
 end
 
 -- 歌詞テキストが変わったときに文字配列を更新
@@ -619,11 +679,27 @@ local function main_loop()
         _G.__reaper_lyrictools_is_editing = is_editing
 
         -- 次に挿入される予定の歌詞（10ノート分）を更新
-        local start_idx = note_count + 1
+        -- 「次に入る 10 ノート分」のプレビュー（改行ユニットはスキップ）
         local preview_units = {}
-        local max_idx = math.min(start_idx + 9, #lyric_chars)
-        for i = start_idx, max_idx do
-          table.insert(preview_units, lyric_chars[i])
+        local units = lyric_chars or {}
+        local unit_idx = 1
+        local used = 0
+        -- すでに使われたノート数ぶんユニットを進める
+        local notes_seen = 0
+        while unit_idx <= #units and notes_seen < note_count do
+          if units[unit_idx] ~= "\n" then
+            notes_seen = notes_seen + 1
+          end
+          unit_idx = unit_idx + 1
+        end
+        -- そこから先のユニットのうち、「改行以外」を最大 10 個プレビュー
+        while unit_idx <= #units and used < 10 do
+          local ch = units[unit_idx]
+          unit_idx = unit_idx + 1
+          if ch ~= "\n" then
+            table.insert(preview_units, ch)
+            used = used + 1
+          end
         end
         if #preview_units == 0 then
           upcoming_preview = "(これ以上の歌詞はありません)"
@@ -640,9 +716,16 @@ local function main_loop()
       upcoming_preview = "(歌詞が読み込まれていません)"
     else
       local preview_units = {}
-      local max_idx = math.min(10, #lyric_chars)
-      for i = 1, max_idx do
-        table.insert(preview_units, lyric_chars[i])
+      local units = lyric_chars or {}
+      local used = 0
+      local unit_idx = 1
+      while unit_idx <= #units and used < 10 do
+        local ch = units[unit_idx]
+        unit_idx = unit_idx + 1
+        if ch ~= "\n" then
+          table.insert(preview_units, ch)
+          used = used + 1
+        end
       end
       upcoming_preview = table.concat(preview_units, " | ")
     end
@@ -1047,21 +1130,15 @@ local function main_loop()
             else
               -- 履歴に現在の状態を保存
               push_lyric_history()
-              -- 母音を挿入位置に追加
-              local base_pos
-              if last_selected_note_index ~= nil then
-                base_pos = last_selected_note_index + 1
-              else
-                base_pos = note_count
-              end
-              local insert_pos = math.min(math.max(base_pos, 0), #lyric_chars)
+              -- 母音を挿入位置に追加（改行ユニットを考慮した位置計算）
+              local lc = lyric_chars or {}
+              local insert_pos = get_insert_unit_pos_after_note(last_selected_note_index, note_count, lc)
               
               -- 母音をユニット配列に変換
               local insert_units = build_lyric_units_from_text(vowel)
               
               -- 既存ユニットに対して、母音を挿入
               local new_units = {}
-              local lc = lyric_chars or {}
               for i = 1, insert_pos do
                 table.insert(new_units, lc[i])
               end
