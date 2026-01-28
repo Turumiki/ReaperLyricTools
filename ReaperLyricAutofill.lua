@@ -162,6 +162,11 @@ local last_note_signature = nil    -- ノート配列のシグネチャ（位置
 local last_note_change_time = 0    -- 最後にノート配列が変化した時刻
 local upcoming_preview = ""        -- 次に挿入される予定の歌詞プレビュー（最大10ノート分）
 
+-- 歌詞用 Undo / Redo 用の履歴
+local lyric_history = {}           -- 各要素は { text = "全文" }
+local lyric_history_index = 0      -- 現在指している履歴のインデックス（0 のとき履歴なし）
+local lyric_history_max = 100      -- 最大保存数（必要なら調整可能）
+
 -- 現在のプロジェクト名から歌詞ファイル名を決定
 -- 例: プロジェクトファイルが "MySong.rpp" の場合 → "MySong_lyrics.txt"
 --     未保存プロジェクトなどで名前が取得できない場合 → 既存の固定名を使用
@@ -222,6 +227,86 @@ local function ensure_lyrics_file()
   return false
 end
 
+-- 履歴に現在の歌詞状態を追加（GUI 操作の直前に呼ぶ）
+local function push_lyric_history()
+  -- 現在のテキストを基準にする（ファイル・配列と同期している前提）
+  local current_text = lyric_text or ""
+
+  -- 直前と同じならスキップ（ノイズ防止）
+  if lyric_history_index > 0 and lyric_history[lyric_history_index]
+     and lyric_history[lyric_history_index].text == current_text then
+    return
+  end
+
+  -- Redo 可能な履歴は破棄（通常の Undo 系挙動）
+  for i = lyric_history_index + 1, #lyric_history do
+    lyric_history[i] = nil
+  end
+
+  -- 新しい履歴を末尾に追加
+  table.insert(lyric_history, { text = current_text })
+
+  -- 最大数を超えた場合は先頭を落とす
+  if #lyric_history > lyric_history_max then
+    table.remove(lyric_history, 1)
+  end
+
+  lyric_history_index = #lyric_history
+end
+
+-- 与えられたテキストを「正」として、TXT と内部状態と MIDI をまとめて反映
+local function apply_lyrics_text_to_all(new_text)
+  lyric_text = new_text or ""
+  update_lyric_chars()
+  last_lyric_text = lyric_text
+
+  -- TXT ファイルに書き戻し
+  local f = io.open(lyrics_file_path, "w")
+  if f then
+    f:write(lyric_text)
+    f:close()
+  end
+
+  -- アクティブテイクにも即反映（ノート数ぶんだけ先頭から割り当て）
+  local editor = reaper.MIDIEditor_GetActive()
+  if not editor then return end
+
+  local take = reaper.MIDIEditor_GetTake(editor)
+  if not take then return end
+
+  local _, note_count, _, text_count = reaper.MIDI_CountEvts(take)
+  if note_count <= 0 then return end
+
+  reaper.MIDI_DisableSort(take)
+  -- 既存 lyric イベント削除
+  for i = text_count - 1, 0, -1 do
+    local retval, _, _, _, typ = reaper.MIDI_GetTextSysexEvt(
+      take, i, true, true, 0, 0, ""
+    )
+    if retval and typ == 5 then
+      reaper.MIDI_DeleteTextSysexEvt(take, i)
+    end
+  end
+
+  -- 先頭から順に再割り当て
+  local max_notes = math.min(note_count, lyric_chars and #lyric_chars or 0)
+  for i = 0, max_notes - 1 do
+    local ok_note, _, _, startppq = reaper.MIDI_GetNote(take, i)
+    if ok_note then
+      local ch = lyric_chars[i + 1] or ""
+      reaper.MIDI_InsertTextSysexEvt(
+        take,
+        false,
+        false,
+        startppq,
+        5,
+        ch
+      )
+    end
+  end
+  reaper.MIDI_Sort(take)
+end
+
 -- 入力テキストから歌詞ユニット配列（拗音・促音マージ済み）を作成
 local function build_lyric_units_from_text(text)
   local normalized = text:gsub("\r\n", "\n"):gsub("\r", "\n")
@@ -254,7 +339,7 @@ local function build_lyric_units_from_text(text)
 end
 
 -- 歌詞テキストが変わったときに文字配列を更新
-local function update_lyric_chars()
+function update_lyric_chars()
   lyric_chars = build_lyric_units_from_text(lyric_text)
 end
 
@@ -480,16 +565,40 @@ local function main_loop()
   gfx.drawstr("変更 (選択)")
 
   -- 「挿入（母音）」ボタン（変更ボタンの右隣）
-  local vowel_btn_w, vowel_btn_h = 130, 22
+  local vowel_btn_w, vowel_btn_h = 120, 22
   local vowel_btn_x = edit_btn_x + edit_btn_w + 10
   local vowel_btn_y = btn_y
 
   gfx.set(0.3, 0.3, 0.3, 1)
   gfx.rect(vowel_btn_x, vowel_btn_y, vowel_btn_w, vowel_btn_h, 1)
   gfx.set(1, 1, 1, 1)
-  gfx.x = vowel_btn_x + 10
+  gfx.x = vowel_btn_x + 6
   gfx.y = vowel_btn_y + 4
   gfx.drawstr("挿入（母音）")
+
+  -- 「Undo（歌詞）」ボタン（母音ボタンの右隣）
+  local undo_btn_w, undo_btn_h = 110, 22
+  local undo_btn_x = vowel_btn_x + vowel_btn_w + 10
+  local undo_btn_y = btn_y
+
+  gfx.set(0.3, 0.3, 0.3, 1)
+  gfx.rect(undo_btn_x, undo_btn_y, undo_btn_w, undo_btn_h, 1)
+  gfx.set(1, 1, 1, 1)
+  gfx.x = undo_btn_x + 10
+  gfx.y = undo_btn_y + 4
+  gfx.drawstr("Undo (歌詞)")
+
+  -- 「Redo（歌詞）」ボタン（Undo ボタンの右隣）
+  local redo_btn_w, redo_btn_h = 110, 22
+  local redo_btn_x = undo_btn_x + undo_btn_w + 10
+  local redo_btn_y = btn_y
+
+  gfx.set(0.3, 0.3, 0.3, 1)
+  gfx.rect(redo_btn_x, redo_btn_y, redo_btn_w, redo_btn_h, 1)
+  gfx.set(1, 1, 1, 1)
+  gfx.x = redo_btn_x + 10
+  gfx.y = redo_btn_y + 4
+  gfx.drawstr("Redo (歌詞)")
 
   gfx.update()
 
@@ -576,6 +685,9 @@ local function main_loop()
         end
       end
 
+      -- 履歴に現在の状態を保存（このあと変更される）
+      push_lyric_history()
+
       local ok, ret = reaper.GetUserInputs(
         "次に挿入される歌詞を追加",
         1,
@@ -613,20 +725,9 @@ local function main_loop()
 
         lyric_chars = new_units
 
-        -- ユニット配列からテキストを再構成してファイルに書き戻す（改行なし・直列）
+        -- ユニット配列からテキストを再構成して一括反映
         local new_text = table.concat(lyric_chars, "")
-        local f = io.open(lyrics_file_path, "w")
-        if f then
-          f:write(new_text)
-          f:close()
-        end
-
-        -- 内部状態も更新
-        lyric_text = new_text
-        last_lyric_text = lyric_text
-        -- 歌詞が変わったので、ノート配列が安定したタイミングで再反映される
-        last_note_signature = nil
-        last_note_change_time = 0
+        apply_lyrics_text_to_all(new_text)
       end
     elseif mx >= del_btn_x and mx <= (del_btn_x + del_btn_w)
        and my >= del_btn_y and my <= (del_btn_y + del_btn_h) then
@@ -655,6 +756,9 @@ local function main_loop()
           if num_selected == 0 then
             reaper.ShowMessageBox("ノートが選択されていません。", "ReaperLyricTools - エラー", 0)
           else
+            -- 履歴に現在の状態を保存
+            push_lyric_history()
+
             -- 歌詞ユニット配列が未構築なら構築
             if not lyric_chars or #lyric_chars == 0 then
               lyric_text = read_lyrics_file()
@@ -672,47 +776,7 @@ local function main_loop()
             lyric_chars = new_units
 
             local new_text = table.concat(lyric_chars, "")
-            local f = io.open(lyrics_file_path, "w")
-            if f then
-              f:write(new_text)
-              f:close()
-            end
-
-            lyric_text = new_text
-            last_lyric_text = lyric_text
-            last_note_signature = nil
-            last_note_change_time = 0
-
-            -- MIDIテイクの歌詞イベントを再構築（即座に反映）
-            reaper.MIDI_DisableSort(take)
-            for i = text_count - 1, 0, -1 do
-              local retval, _, _, ppqpos, typ = reaper.MIDI_GetTextSysexEvt(
-                take, i, true, true, 0, 0, ""
-              )
-              if retval and typ == 5 then
-                reaper.MIDI_DeleteTextSysexEvt(take, i)
-              end
-            end
-            local _, note_count_after = reaper.MIDI_CountEvts(take)
-            local lyric_idx = 1
-            for i = 0, note_count_after - 1 do
-              if not selected_note_indices[i + 1] and lyric_idx <= #lyric_chars then
-                local ok_note, _, _, startppq = reaper.MIDI_GetNote(take, i)
-                if ok_note then
-                  local ch = lyric_chars[lyric_idx] or ""
-                  reaper.MIDI_InsertTextSysexEvt(
-                    take,
-                    false,
-                    false,
-                    startppq,
-                    5,
-                    ch
-                  )
-                  lyric_idx = lyric_idx + 1
-                end
-              end
-            end
-            reaper.MIDI_Sort(take)
+            apply_lyrics_text_to_all(new_text)
           end
         end
       end
@@ -777,6 +841,8 @@ local function main_loop()
             )
             
             if ok then
+              -- 履歴に現在の状態を保存
+              push_lyric_history()
               -- 歌詞ユニット配列が未構築なら構築
               if not lyric_chars or #lyric_chars == 0 then
                 lyric_text = read_lyrics_file()
@@ -804,48 +870,9 @@ local function main_loop()
               
               lyric_chars = new_units
               
-              -- ユニット配列からテキストを再構成してファイルに書き戻す
+              -- ユニット配列からテキストを再構成して一括反映
               local new_text = table.concat(lyric_chars, "")
-              local f = io.open(lyrics_file_path, "w")
-              if f then
-                f:write(new_text)
-                f:close()
-              end
-              
-              -- 内部状態も更新
-              lyric_text = new_text
-              last_lyric_text = lyric_text
-              last_note_signature = nil
-              last_note_change_time = 0
-              
-              -- MIDIテイクの歌詞イベントも直接更新（即座に反映）
-              reaper.MIDI_DisableSort(take)
-              -- 既存の歌詞イベント（type=5）を削除
-              for i = text_count - 1, 0, -1 do
-                local retval, _, _, ppqpos, typ, msg = reaper.MIDI_GetTextSysexEvt(
-                  take, i, true, true, 0, 0, ""
-                )
-                if retval and typ == 5 then
-                  reaper.MIDI_DeleteTextSysexEvt(take, i)
-                end
-              end
-              -- 新しい歌詞を挿入
-              local _, note_count_after = reaper.MIDI_CountEvts(take)
-              for i = 0, note_count_after - 1 do
-                local ok_note, _, _, startppq, endppq = reaper.MIDI_GetNote(take, i)
-                if ok_note and i + 1 <= #lyric_chars then
-                  local ch = lyric_chars[i + 1] or ""
-                  reaper.MIDI_InsertTextSysexEvt(
-                    take,
-                    false,
-                    false,
-                    startppq,
-                    5,
-                    ch
-                  )
-                end
-              end
-              reaper.MIDI_Sort(take)
+              apply_lyrics_text_to_all(new_text)
             end
           end
         end
@@ -906,6 +933,8 @@ local function main_loop()
             if vowel == "" then
               reaper.ShowMessageBox("選択されたノートに歌詞がありません。", "ReaperLyricTools - エラー", 0)
             else
+              -- 履歴に現在の状態を保存
+              push_lyric_history()
               -- 母音を挿入位置に追加
               local base_pos
               if last_selected_note_index ~= nil then
@@ -932,22 +961,36 @@ local function main_loop()
               
               lyric_chars = new_units
               
-              -- ユニット配列からテキストを再構成してファイルに書き戻す
+              -- ユニット配列からテキストを再構成して一括反映
               local new_text = table.concat(lyric_chars, "")
-              local f = io.open(lyrics_file_path, "w")
-              if f then
-                f:write(new_text)
-                f:close()
-              end
-              
-              -- 内部状態も更新
-              lyric_text = new_text
-              last_lyric_text = lyric_text
-              last_note_signature = nil
-              last_note_change_time = 0
+              apply_lyrics_text_to_all(new_text)
             end
           end
         end
+      end
+    elseif mx >= undo_btn_x and mx <= (undo_btn_x + undo_btn_w)
+       and my >= undo_btn_y and my <= (undo_btn_y + undo_btn_h) then
+      -- Undo（歌詞）ボタン
+      if lyric_history_index > 1 then
+        lyric_history_index = lyric_history_index - 1
+        local state = lyric_history[lyric_history_index]
+        if state and state.text ~= nil then
+          apply_lyrics_text_to_all(state.text)
+        end
+      else
+        reaper.ShowMessageBox("これ以上戻せる履歴がありません。", "ReaperLyricTools - Undo", 0)
+      end
+    elseif mx >= redo_btn_x and mx <= (redo_btn_x + redo_btn_w)
+       and my >= redo_btn_y and my <= (redo_btn_y + redo_btn_h) then
+      -- Redo（歌詞）ボタン
+      if lyric_history_index > 0 and lyric_history_index < #lyric_history then
+        lyric_history_index = lyric_history_index + 1
+        local state = lyric_history[lyric_history_index]
+        if state and state.text ~= nil then
+          apply_lyrics_text_to_all(state.text)
+        end
+      else
+        reaper.ShowMessageBox("やり直せる履歴がありません。", "ReaperLyricTools - Redo", 0)
       end
     end
   end
