@@ -956,12 +956,20 @@ local function main_loop()
               last_lyric_text = lyric_text
             end
 
-            -- 選択されていないノートに対応する歌詞だけ残す（選択されたノートの歌詞を削除）
+            -- 選択されているノートに対応する歌詞ユニットだけを削除（改行ユニットはそのまま残す）
             local new_units = {}
             local lc = lyric_chars or {}
+            local note_pos = 0
             for i = 1, #lc do
-              if not selected_note_indices[i] then
-                table.insert(new_units, lc[i])
+              local ch = lc[i]
+              if ch ~= "\n" then
+                note_pos = note_pos + 1
+                if not selected_note_indices[note_pos] then
+                  table.insert(new_units, ch)
+                end
+              else
+                -- 改行は常にそのまま残す
+                table.insert(new_units, ch)
               end
             end
             lyric_chars = new_units
