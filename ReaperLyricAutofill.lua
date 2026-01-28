@@ -352,10 +352,78 @@ local check_interval = 0.2  -- 歌詞ファイル監視の更新間隔（秒）
 local note_apply_delay = 0.6 -- 「ノート編集が落ち着いてから」歌詞を反映する待ち時間（秒）
 local has_js_mouse = reaper.APIExists and reaper.APIExists("JS_Mouse_GetState") or false
 
+------------------------------------------------------------
+-- レイアウト定義（ウィンドウ幅・高さに対する比率で指定）
+------------------------------------------------------------
+local LAYOUT = {
+  -- 初期ウィンドウサイズ（ピクセル）
+  default_w = 560,
+  default_h = 180,
+
+  -- 余白（ウィンドウ幅・高さに対する比率 0〜1）
+  margin_left_ratio   = 0.02,
+  margin_right_ratio  = 0.02,
+  margin_top_ratio    = 0.055,
+  margin_bottom_ratio = 0.055,
+
+  -- ボタン行
+  button_height_ratio = 0.18,   -- ウィンドウ高さに対するボタン高さ
+  button_gap_ratio    = 0.018,  -- ボタン間の隙間（幅に対する比率）
+  -- 各ボタンの幅の比率（合計で 1 以下、残りは gap で消費）
+  -- 順: フォルダを開く, 挿入, 削除, 変更, 挿入(母音), Undo, Redo
+  button_width_ratios = { 0.14, 0.11, 0.11, 0.11, 0.12, 0.11, 0.11 },
+
+  -- テキストエリア（行間など）
+  line_height_ratio = 0.10,  -- 1行あたりの高さ比率
+}
+
+-- 現在のウィンドウサイズからレイアウトをピクセルに変換
+local function layout_pixels()
+  local w, h = gfx.w, gfx.h
+  local ml = math.floor(w * LAYOUT.margin_left_ratio)
+  local mr = math.floor(w * LAYOUT.margin_right_ratio)
+  local mt = math.floor(h * LAYOUT.margin_top_ratio)
+  local mb = math.floor(h * LAYOUT.margin_bottom_ratio)
+  local btn_h = math.floor(h * LAYOUT.button_height_ratio)
+  local gap = math.floor(w * LAYOUT.button_gap_ratio)
+  local line_h = math.floor(h * LAYOUT.line_height_ratio)
+
+  local btn_y = h - mb - btn_h
+  local content_w = w - ml - mr
+  local total_btn_ratio = 0
+  for i = 1, #LAYOUT.button_width_ratios do
+    total_btn_ratio = total_btn_ratio + LAYOUT.button_width_ratios[i]
+  end
+  local total_gap = gap * (#LAYOUT.button_width_ratios - 1)
+  local btn_area_w = content_w - total_gap
+  local btn_widths = {}
+  for i = 1, #LAYOUT.button_width_ratios do
+    btn_widths[i] = math.floor(btn_area_w * (LAYOUT.button_width_ratios[i] / total_btn_ratio))
+  end
+
+  local btn_x = {}
+  btn_x[1] = ml
+  for i = 2, #btn_widths do
+    btn_x[i] = btn_x[i - 1] + btn_widths[i - 1] + gap
+  end
+
+  return {
+    margin_left = ml,
+    margin_top = mt,
+    line_height = line_h,
+    button_y = btn_y,
+    button_h = btn_h,
+    button_x = btn_x,
+    button_w = btn_widths,
+    pad_btn_x = math.floor(btn_widths[1] * 0.07),
+    pad_btn_y = math.floor(btn_h * 0.25),
+  }
+end
+
 local function main_loop()
   -- シンプルな常時表示ウィンドウ（gfx）
   if not gui_initialized then
-    gfx.init("ReaperLyricTools", 480, 150, 0)
+    gfx.init("ReaperLyricTools", LAYOUT.default_w, LAYOUT.default_h, 0)
     gfx.dock(-1) -- ドッキング状態を記憶・復元
     gfx.setfont(1, "Arial", 15)
     gui_initialized = true
@@ -478,26 +546,30 @@ local function main_loop()
   end
 
   -- ------------------------------
-  -- ウィンドウ描画（超シンプルレイアウト）
+  -- ウィンドウ描画（レイアウト比率で計算）
   -- ------------------------------
+  local lay = layout_pixels()
+  local ml, mt, lh = lay.margin_left, lay.margin_top, lay.line_height
+  local btn_y, btn_h = lay.button_y, lay.button_h
+  local pad_x, pad_y = lay.pad_btn_x, lay.pad_btn_y
+
   gfx.set(0.1, 0.1, 0.1, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
 
   gfx.set(1, 1, 1, 1)
-  gfx.x, gfx.y = 10, 10
+  gfx.x, gfx.y = ml, mt
   gfx.drawstr("歌詞ファイル: ")
   gfx.set(0.7, 0.9, 0.7, 1)
   gfx.drawstr(lyrics_file_path)
 
-  gfx.y = gfx.y + 18
-  gfx.x = 10
+  gfx.y = gfx.y + lh
+  gfx.x = ml
   gfx.set(0.8, 0.8, 0.8, 1)
   gfx.drawstr("このファイルをテキストエディタで開いて編集してください（日本語・複数行OK）。")
 
-  -- 状態表示
   local is_editing = _G.__reaper_lyrictools_is_editing
-  gfx.y = gfx.y + 18
-  gfx.x = 10
+  gfx.y = gfx.y + lh
+  gfx.x = ml
   if is_editing then
     gfx.set(0.9, 0.6, 0.4, 1)
     gfx.drawstr("ノート編集中: 歌詞反映を待機中…")
@@ -506,99 +578,29 @@ local function main_loop()
     gfx.drawstr("待機中: 歌詞は最新の状態です。")
   end
 
-  -- 次に入る歌詞プレビュー（最大10ノート分）
-  gfx.y = gfx.y + 16
-  gfx.x = 10
+  gfx.y = gfx.y + lh
+  gfx.x = ml
   gfx.set(0.8, 0.8, 0.8, 1)
   gfx.drawstr("次に挿入される歌詞 (最大10ノート): ")
-  gfx.y = gfx.y + 16
-  gfx.x = 10
+  gfx.y = gfx.y + lh
+  gfx.x = ml
   gfx.set(1, 1, 1, 1)
   gfx.drawstr(upcoming_preview or "")
 
-  -- TXTファイル作成ボタン（左下）
-  local btn_w, btn_h = 140, 22
-  local btn_x = 10
-  local btn_y = gfx.h - btn_h - 10
-
-  gfx.set(0.3, 0.3, 0.3, 1)
-  gfx.rect(btn_x, btn_y, btn_w, btn_h, 1)
-  gfx.set(1, 1, 1, 1)
-  gfx.x = btn_x + 10
-  gfx.y = btn_y + 4
-  gfx.drawstr("フォルダを開く")
-
-  -- 「挿入」ボタン（TXTボタンの右隣）
-  local ins_btn_w, ins_btn_h = 110, 22
-  local ins_btn_x = btn_x + btn_w + 10
-  local ins_btn_y = btn_y
-
-  gfx.set(0.3, 0.3, 0.3, 1)
-  gfx.rect(ins_btn_x, ins_btn_y, ins_btn_w, ins_btn_h, 1)
-  gfx.set(1, 1, 1, 1)
-  gfx.x = ins_btn_x + 10
-  gfx.y = ins_btn_y + 4
-  gfx.drawstr("挿入 (1行)")
-
-  -- 「削除」ボタン（挿入ボタンの右隣）
-  local del_btn_w, del_btn_h = 110, 22
-  local del_btn_x = ins_btn_x + ins_btn_w + 10
-  local del_btn_y = btn_y
-
-  gfx.set(0.3, 0.3, 0.3, 1)
-  gfx.rect(del_btn_x, del_btn_y, del_btn_w, del_btn_h, 1)
-  gfx.set(1, 1, 1, 1)
-  gfx.x = del_btn_x + 10
-  gfx.y = del_btn_y + 4
-  gfx.drawstr("削除 (選択)")
-
-  -- 「変更」ボタン（削除ボタンの右隣）
-  local edit_btn_w, edit_btn_h = 110, 22
-  local edit_btn_x = del_btn_x + del_btn_w + 10
-  local edit_btn_y = btn_y
-
-  gfx.set(0.3, 0.3, 0.3, 1)
-  gfx.rect(edit_btn_x, edit_btn_y, edit_btn_w, edit_btn_h, 1)
-  gfx.set(1, 1, 1, 1)
-  gfx.x = edit_btn_x + 10
-  gfx.y = edit_btn_y + 4
-  gfx.drawstr("変更 (選択)")
-
-  -- 「挿入（母音）」ボタン（変更ボタンの右隣）
-  local vowel_btn_w, vowel_btn_h = 120, 22
-  local vowel_btn_x = edit_btn_x + edit_btn_w + 10
-  local vowel_btn_y = btn_y
-
-  gfx.set(0.3, 0.3, 0.3, 1)
-  gfx.rect(vowel_btn_x, vowel_btn_y, vowel_btn_w, vowel_btn_h, 1)
-  gfx.set(1, 1, 1, 1)
-  gfx.x = vowel_btn_x + 6
-  gfx.y = vowel_btn_y + 4
-  gfx.drawstr("挿入（母音）")
-
-  -- 「Undo（歌詞）」ボタン（母音ボタンの右隣）
-  local undo_btn_w, undo_btn_h = 110, 22
-  local undo_btn_x = vowel_btn_x + vowel_btn_w + 10
-  local undo_btn_y = btn_y
-
-  gfx.set(0.3, 0.3, 0.3, 1)
-  gfx.rect(undo_btn_x, undo_btn_y, undo_btn_w, undo_btn_h, 1)
-  gfx.set(1, 1, 1, 1)
-  gfx.x = undo_btn_x + 10
-  gfx.y = undo_btn_y + 4
-  gfx.drawstr("Undo (歌詞)")
-
-  -- 「Redo（歌詞）」ボタン（Undo ボタンの右隣）
-  local redo_btn_w, redo_btn_h = 110, 22
-  local redo_btn_x = undo_btn_x + undo_btn_w + 10
-  local redo_btn_y = btn_y
-
-  gfx.set(0.3, 0.3, 0.3, 1)
-  gfx.rect(redo_btn_x, redo_btn_y, redo_btn_w, redo_btn_h, 1)
-  gfx.set(1, 1, 1, 1)
-  gfx.x = redo_btn_x + 10
-  gfx.y = redo_btn_y + 4
-  gfx.drawstr("Redo (歌詞)")
+  -- ボタン行（1=フォルダを開く, 2=挿入, 3=削除, 4=変更, 5=挿入(母音), 6=Undo, 7=Redo）
+  local btn_labels = {
+    "フォルダを開く", "挿入 (1行)", "削除 (選択)", "変更 (選択)",
+    "挿入（母音）", "Undo (歌詞)", "Redo (歌詞)"
+  }
+  for i = 1, 7 do
+    local bx, bw = lay.button_x[i], lay.button_w[i]
+    gfx.set(0.3, 0.3, 0.3, 1)
+    gfx.rect(bx, btn_y, bw, btn_h, 1)
+    gfx.set(1, 1, 1, 1)
+    gfx.x = bx + pad_x
+    gfx.y = btn_y + pad_y
+    gfx.drawstr(btn_labels[i])
+  end
 
   gfx.update()
 
@@ -606,7 +608,7 @@ local function main_loop()
   local mx, my = gfx.mouse_x, gfx.mouse_y
   local mcap = gfx.mouse_cap
   if (last_mouse_cap & 1) == 0 and (mcap & 1) == 1 then
-    if mx >= btn_x and mx <= (btn_x + btn_w)
+    if mx >= lay.button_x[1] and mx <= (lay.button_x[1] + lay.button_w[1])
        and my >= btn_y and my <= (btn_y + btn_h) then
       -- プロジェクトフォルダを開く
       -- SWS の CF_ShellExecute があればそれを使う（既定のファイラで開く）
@@ -622,8 +624,8 @@ local function main_loop()
           0
         )
       end
-    elseif mx >= ins_btn_x and mx <= (ins_btn_x + ins_btn_w)
-       and my >= ins_btn_y and my <= (ins_btn_y + ins_btn_h) then
+    elseif mx >= lay.button_x[2] and mx <= (lay.button_x[2] + lay.button_w[2])
+       and my >= btn_y and my <= (btn_y + btn_h) then
       -- 挿入ボタン: 1行入力して、テキストファイルに挿入のみ行う
       -- 歌詞ユニット配列が未構築なら構築
       if not lyric_chars or #lyric_chars == 0 then
@@ -729,8 +731,8 @@ local function main_loop()
         local new_text = table.concat(lyric_chars, "")
         apply_lyrics_text_to_all(new_text)
       end
-    elseif mx >= del_btn_x and mx <= (del_btn_x + del_btn_w)
-       and my >= del_btn_y and my <= (del_btn_y + del_btn_h) then
+    elseif mx >= lay.button_x[3] and mx <= (lay.button_x[3] + lay.button_w[3])
+       and my >= btn_y and my <= (btn_y + btn_h) then
       -- 削除ボタン: 選択されたノートの歌詞を削除
       local editor = reaper.MIDIEditor_GetActive()
       if not editor then
@@ -780,8 +782,8 @@ local function main_loop()
           end
         end
       end
-    elseif mx >= edit_btn_x and mx <= (edit_btn_x + edit_btn_w)
-       and my >= edit_btn_y and my <= (edit_btn_y + edit_btn_h) then
+    elseif mx >= lay.button_x[4] and mx <= (lay.button_x[4] + lay.button_w[4])
+       and my >= btn_y and my <= (btn_y + btn_h) then
       -- 変更ボタン: 選択されたノートの歌詞を編集
       local editor = reaper.MIDIEditor_GetActive()
       if not editor then
@@ -877,8 +879,8 @@ local function main_loop()
           end
         end
       end
-    elseif mx >= vowel_btn_x and mx <= (vowel_btn_x + vowel_btn_w)
-       and my >= vowel_btn_y and my <= (vowel_btn_y + vowel_btn_h) then
+    elseif mx >= lay.button_x[5] and mx <= (lay.button_x[5] + lay.button_w[5])
+       and my >= btn_y and my <= (btn_y + btn_h) then
       -- 挿入（母音）ボタン: 選択されたノートの歌詞から母音を抽出して自動挿入（確認なし）
       -- 歌詞ユニット配列が未構築なら構築
       if not lyric_chars or #lyric_chars == 0 then
@@ -968,8 +970,8 @@ local function main_loop()
           end
         end
       end
-    elseif mx >= undo_btn_x and mx <= (undo_btn_x + undo_btn_w)
-       and my >= undo_btn_y and my <= (undo_btn_y + undo_btn_h) then
+    elseif mx >= lay.button_x[6] and mx <= (lay.button_x[6] + lay.button_w[6])
+       and my >= btn_y and my <= (btn_y + btn_h) then
       -- Undo（歌詞）ボタン
       if lyric_history_index > 1 then
         lyric_history_index = lyric_history_index - 1
@@ -980,8 +982,8 @@ local function main_loop()
       else
         reaper.ShowMessageBox("これ以上戻せる履歴がありません。", "ReaperLyricTools - Undo", 0)
       end
-    elseif mx >= redo_btn_x and mx <= (redo_btn_x + redo_btn_w)
-       and my >= redo_btn_y and my <= (redo_btn_y + redo_btn_h) then
+    elseif mx >= lay.button_x[7] and mx <= (lay.button_x[7] + lay.button_w[7])
+       and my >= btn_y and my <= (btn_y + btn_h) then
       -- Redo（歌詞）ボタン
       if lyric_history_index > 0 and lyric_history_index < #lyric_history then
         lyric_history_index = lyric_history_index + 1
