@@ -738,6 +738,8 @@ local function main_loop()
   local ml, mt, lh = lay.margin_left, lay.margin_top, lay.line_height
   local btn_y, btn_h = lay.button_y, lay.button_h
   local pad_x, pad_y = lay.pad_btn_x, lay.pad_btn_y
+  -- Undo/Redo 用の上段ボタン Y 座標（下段ボタンの一つ上に配置）
+  local undo_y = btn_y - btn_h - math.floor(lh * 0.4)
 
   gfx.set(0.1, 0.1, 0.1, 1)
   gfx.rect(0, 0, gfx.w, gfx.h, 1)
@@ -746,7 +748,10 @@ local function main_loop()
   gfx.x, gfx.y = ml, mt
   gfx.drawstr("歌詞ファイル: ")
   gfx.set(0.7, 0.9, 0.7, 1)
-  gfx.drawstr(current_lyrics_file_path or "")
+  -- フルパスではなくファイル名のみ表示
+  local path_str = current_lyrics_file_path or ""
+  local just_name = path_str:match("([^/\\]+)$") or path_str
+  gfx.drawstr(just_name)
 
   gfx.y = gfx.y + lh
   gfx.x = ml
@@ -773,19 +778,44 @@ local function main_loop()
   gfx.set(1, 1, 1, 1)
   gfx.drawstr(upcoming_preview or "")
 
-  -- ボタン行（1=フォルダを開く, 2=挿入, 3=削除, 4=変更, 5=挿入(母音), 6=Undo, 7=Redo）
-  local btn_labels = {
-    "フォルダを開く", "挿入 (1行)", "削除 (選択)", "変更 (選択)",
-    "挿入（母音）", "Undo (歌詞)", "Redo (歌詞)"
+  -- 下段ボタン行（1=フォルダ, 2=挿入, 3=削除, 4=変更, 5=母音）
+  local bottom_labels = {
+    "フォルダ", "＋挿入", "－削除", "✎変更", "V母音"
   }
-  for i = 1, 7 do
+  for i = 1, 5 do
     local bx, bw = lay.button_x[i], lay.button_w[i]
-    gfx.set(0.3, 0.3, 0.3, 1)
+    -- ボタンごとに色を変える
+    if i == 2 or i == 5 then
+      -- 挿入系: 青緑系
+      gfx.set(0.2, 0.5, 0.6, 1)
+    elseif i == 3 then
+      -- 削除: 赤系
+      gfx.set(0.6, 0.25, 0.25, 1)
+    elseif i == 4 then
+      -- 変更: 落ち着いた青系
+      gfx.set(0.3, 0.35, 0.6, 1)
+    else
+      -- フォルダ: グレー
+      gfx.set(0.3, 0.3, 0.3, 1)
+    end
     gfx.rect(bx, btn_y, bw, btn_h, 1)
     gfx.set(1, 1, 1, 1)
     gfx.x = bx + pad_x
     gfx.y = btn_y + pad_y
-    gfx.drawstr(btn_labels[i])
+    gfx.drawstr(bottom_labels[i])
+  end
+
+  -- 上段 Undo / Redo ボタン（6,7 番スロットを使用）
+  local undo_labels = { "↺ Undo", "↻ Redo" }
+  for j = 1, 2 do
+    local idx = 5 + j -- 6,7
+    local bx, bw = lay.button_x[idx], lay.button_w[idx]
+    gfx.set(0.25, 0.45, 0.7, 1)
+    gfx.rect(bx, undo_y, bw, btn_h, 1)
+    gfx.set(1, 1, 1, 1)
+    gfx.x = bx + pad_x
+    gfx.y = undo_y + pad_y
+    gfx.drawstr(undo_labels[j])
   end
 
   gfx.update()
@@ -794,6 +824,7 @@ local function main_loop()
   local mx, my = gfx.mouse_x, gfx.mouse_y
   local mcap = gfx.mouse_cap
   if (last_mouse_cap & 1) == 0 and (mcap & 1) == 1 then
+    -- 下段ボタン (1〜5)
     if mx >= lay.button_x[1] and mx <= (lay.button_x[1] + lay.button_w[1])
        and my >= btn_y and my <= (btn_y + btn_h) then
       -- プロジェクトフォルダを開く
@@ -1167,8 +1198,9 @@ local function main_loop()
           end
         end
       end
+    -- 上段 Undo / Redo ボタン
     elseif mx >= lay.button_x[6] and mx <= (lay.button_x[6] + lay.button_w[6])
-       and my >= btn_y and my <= (btn_y + btn_h) then
+       and my >= undo_y and my <= (undo_y + btn_h) then
       -- Undo（歌詞）ボタン
       if lyric_history_index > 1 then
         lyric_history_index = lyric_history_index - 1
@@ -1180,7 +1212,7 @@ local function main_loop()
         reaper.ShowMessageBox("これ以上戻せる履歴がありません。", "ReaperLyricTools - Undo", 0)
       end
     elseif mx >= lay.button_x[7] and mx <= (lay.button_x[7] + lay.button_w[7])
-       and my >= btn_y and my <= (btn_y + btn_h) then
+       and my >= undo_y and my <= (undo_y + btn_h) then
       -- Redo（歌詞）ボタン
       if lyric_history_index > 0 and lyric_history_index < #lyric_history then
         lyric_history_index = lyric_history_index + 1
