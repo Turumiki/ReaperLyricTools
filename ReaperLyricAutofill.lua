@@ -162,9 +162,38 @@ local last_note_signature = nil    -- ノート配列のシグネチャ（位置
 local last_note_change_time = 0    -- 最後にノート配列が変化した時刻
 local upcoming_preview = ""        -- 次に挿入される予定の歌詞プレビュー（最大10ノート分）
 
--- 歌詞ファイルのパス（現在のプロジェクトフォルダ）
+-- 現在のプロジェクト名から歌詞ファイル名を決定
+-- 例: プロジェクトファイルが "MySong.rpp" の場合 → "MySong_lyrics.txt"
+--     未保存プロジェクトなどで名前が取得できない場合 → 既存の固定名を使用
 local project_dir = reaper.GetProjectPath("")
-local lyrics_file_path = project_dir .. "/ReaperLyricTools_lyrics.txt"
+
+local function get_project_base_name()
+  -- アクティブプロジェクトのファイルパスを取得
+  local _, proj_fn = reaper.EnumProjects(-1, "")
+  if not proj_fn or proj_fn == "" then
+    return nil
+  end
+
+  -- パス部分を除去（最後の区切り以降を取得）
+  local name = proj_fn:match("([^/\\]+)$") or proj_fn
+  -- 拡張子を除去（例: ".rpp"）
+  name = name:gsub("%.%w+$", "")
+
+  if name == "" then
+    return nil
+  end
+  return name
+end
+
+local project_base_name = get_project_base_name()
+
+local lyrics_file_path
+if project_base_name then
+  lyrics_file_path = project_dir .. "/" .. project_base_name .. "_lyrics.txt"
+else
+  -- フォールバック: 従来どおりの固定ファイル名
+  lyrics_file_path = project_dir .. "/ReaperLyricTools_lyrics.txt"
+end
 
 -- 歌詞ファイル読み込み
 local function read_lyrics_file()
