@@ -886,21 +886,20 @@ local function main_loop()
         end
       end
 
-      -- デフォルト値: 選択されたノートの歌詞の母音、なければ次に挿入される予定の歌詞の最初のユニット
+      -- デフォルト値: 選択されたノートの歌詞の母音、なければ「次に入る予定の文字」（改行はスキップ）
       local default_value = ""
       if selected_note_lyric and selected_note_lyric ~= "" then
         -- 選択されたノートの歌詞から母音を抽出
         default_value = extract_vowel(selected_note_lyric)
       elseif lyric_chars and #lyric_chars > 0 then
-        local base_pos
-        if last_selected_note_index ~= nil then
-          base_pos = last_selected_note_index + 1
-        else
-          base_pos = note_count
+        local lc = lyric_chars or {}
+        local insert_pos = get_insert_unit_pos_after_note(last_selected_note_index, note_count, lc)
+        local idx = insert_pos + 1
+        while idx <= #lc and lc[idx] == "\n" do
+          idx = idx + 1
         end
-        local next_index = base_pos + 1
-        if next_index <= #lyric_chars then
-          default_value = lyric_chars[next_index] or ""
+        if idx <= #lc then
+          default_value = lc[idx] or ""
         end
       end
 
@@ -918,20 +917,10 @@ local function main_loop()
         -- 挿入テキストをユニット配列に変換
         local insert_units = build_lyric_units_from_text(ret)
 
-        -- 既存ユニットに対して、挿入位置を決定
+        -- 既存ユニットに対して、挿入位置を決定（改行ユニットを考慮）
         local new_units = {}
-        local total_units = (#lyric_chars)
-        -- 挿入位置:
-        -- - ノートが選択されていれば「最後に選択されているノートの次」
-        -- - 何も選択されていなければ「既存ノートの末尾の次」
-        local base_pos
-        if last_selected_note_index ~= nil then
-          base_pos = last_selected_note_index + 1
-        else
-          base_pos = note_count
-        end
-        local insert_pos = math.min(math.max(base_pos, 0), total_units)
         local lc = lyric_chars or {}
+        local insert_pos = get_insert_unit_pos_after_note(last_selected_note_index, note_count, lc)
 
         for i = 1, insert_pos do
           table.insert(new_units, lc[i])
@@ -939,7 +928,7 @@ local function main_loop()
         for i = 1, #insert_units do
           table.insert(new_units, insert_units[i])
         end
-        for i = insert_pos + 1, total_units do
+        for i = insert_pos + 1, #lc do
           table.insert(new_units, lc[i])
         end
 
