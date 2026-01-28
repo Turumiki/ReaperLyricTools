@@ -733,6 +733,7 @@ local function main_loop()
         -- ユニット配列からテキストを再構成して一括反映
         local new_text = table.concat(lyric_chars, "")
         apply_lyrics_text_to_all(new_text)
+        push_lyric_history()  -- 変更後の状態を履歴に追加（Undo 用）
       end
     elseif mx >= lay.button_x[3] and mx <= (lay.button_x[3] + lay.button_w[3])
        and my >= btn_y and my <= (btn_y + btn_h) then
@@ -783,6 +784,7 @@ local function main_loop()
 
             local new_text = table.concat(lyric_chars, "")
             apply_lyrics_text_to_all(new_text)
+            push_lyric_history()  -- 変更後の状態を履歴に追加（Undo 用）
           end
         end
       end
@@ -881,6 +883,7 @@ local function main_loop()
               -- ユニット配列からテキストを再構成して一括反映
               local new_text = table.concat(lyric_chars, "")
               apply_lyrics_text_to_all(new_text)
+              push_lyric_history()  -- 変更後の状態を履歴に追加（Undo 用）
             end
           end
         end
@@ -973,6 +976,7 @@ local function main_loop()
               -- ユニット配列からテキストを再構成して一括反映
               local new_text = table.concat(lyric_chars, "")
               apply_lyrics_text_to_all(new_text)
+              push_lyric_history()  -- 変更後の状態を履歴に追加（Undo 用）
             end
           end
         end
