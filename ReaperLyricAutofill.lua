@@ -465,7 +465,7 @@ local function main_loop()
   gfx.set(1, 1, 1, 1)
   gfx.x = del_btn_x + 10
   gfx.y = del_btn_y + 4
-  gfx.drawstr("削除 (ノート)")
+  gfx.drawstr("削除 (選択)")
 
   -- 「変更」ボタン（削除ボタンの右隣）
   local edit_btn_w, edit_btn_h = 110, 22
@@ -630,55 +630,42 @@ local function main_loop()
       end
     elseif mx >= del_btn_x and mx <= (del_btn_x + del_btn_w)
        and my >= del_btn_y and my <= (del_btn_y + del_btn_h) then
-      -- 削除ボタン: 次に挿入される位置から、指定ノート数ぶん歌詞ユニットを削除
-      local ok, ret = reaper.GetUserInputs(
-        "歌詞ユニットの削除",
-        1,
-        "削除するノート数（整数、例: 1〜10）:",
-        "1"
-      )
-      if ok and ret ~= "" then
-        local count = tonumber(ret)
-        if count and count > 0 then
-          -- 歌詞ユニット配列が未構築なら構築
-          if not lyric_chars or #lyric_chars == 0 then
-            lyric_text = read_lyrics_file()
-            update_lyric_chars()
-            last_lyric_text = lyric_text
-          end
-
-          local editor = reaper.MIDIEditor_GetActive()
-          local note_count = 0
-          local last_selected_note_index = nil
-          if editor then
-            local take = reaper.MIDIEditor_GetTake(editor)
-            if take then
-              local _, nc = reaper.MIDI_CountEvts(take)
-              note_count = nc or 0
-              for i = 0, note_count - 1 do
-                local ok_note, sel = reaper.MIDI_GetNote(take, i)
-                if ok_note and sel then
-                  last_selected_note_index = i
-                end
-              end
+      -- 削除ボタン: 選択されたノートの歌詞を削除
+      local editor = reaper.MIDIEditor_GetActive()
+      if not editor then
+        reaper.ShowMessageBox("MIDIエディタが開かれていません。", "ReaperLyricTools - エラー", 0)
+      else
+        local take = reaper.MIDIEditor_GetTake(editor)
+        if not take then
+          reaper.ShowMessageBox("アクティブなMIDIテイクがありません。", "ReaperLyricTools - エラー", 0)
+        else
+          -- 選択されたノートのインデックスを取得
+          local _, note_count, _, text_count = reaper.MIDI_CountEvts(take)
+          local selected_note_indices = {}
+          for i = 0, note_count - 1 do
+            local ok_note, sel = reaper.MIDI_GetNote(take, i)
+            if ok_note and sel then
+              selected_note_indices[i + 1] = true  -- 1-based で「このノートは選択されている」を記録
             end
           end
 
-          local total_units = #lyric_chars
-          local base_pos
-          if last_selected_note_index ~= nil then
-            base_pos = last_selected_note_index + 1
-          else
-            base_pos = note_count
-          end
-          -- 削除開始位置（1-based）
-          local del_start = math.min(math.max(base_pos + 1, 1), total_units + 1)
-          local del_end = math.min(del_start - 1 + count, total_units)
+          local num_selected = 0
+          for _ in pairs(selected_note_indices) do num_selected = num_selected + 1 end
 
-          if del_start <= total_units and del_start <= del_end then
+          if num_selected == 0 then
+            reaper.ShowMessageBox("ノートが選択されていません。", "ReaperLyricTools - エラー", 0)
+          else
+            -- 歌詞ユニット配列が未構築なら構築
+            if not lyric_chars or #lyric_chars == 0 then
+              lyric_text = read_lyrics_file()
+              update_lyric_chars()
+              last_lyric_text = lyric_text
+            end
+
+            -- 選択されていないノートに対応する歌詞だけ残す（選択されたノートの歌詞を削除）
             local new_units = {}
-            for i = 1, total_units do
-              if i < del_start or i > del_end then
+            for i = 1, #lyric_chars do
+              if not selected_note_indices[i] then
                 table.insert(new_units, lyric_chars[i])
               end
             end
@@ -695,6 +682,37 @@ local function main_loop()
             last_lyric_text = lyric_text
             last_note_signature = nil
             last_note_change_time = 0
+
+            -- MIDIテイクの歌詞イベントを再構築（即座に反映）
+            reaper.MIDI_DisableSort(take)
+            for i = text_count - 1, 0, -1 do
+              local retval, _, _, ppqpos, typ = reaper.MIDI_GetTextSysexEvt(
+                take, i, true, true, 0, 0, ""
+              )
+              if retval and typ == 5 then
+                reaper.MIDI_DeleteTextSysexEvt(take, i)
+              end
+            end
+            local _, note_count_after = reaper.MIDI_CountEvts(take)
+            local lyric_idx = 1
+            for i = 0, note_count_after - 1 do
+              if not selected_note_indices[i + 1] and lyric_idx <= #lyric_chars then
+                local ok_note, _, _, startppq = reaper.MIDI_GetNote(take, i)
+                if ok_note then
+                  local ch = lyric_chars[lyric_idx] or ""
+                  reaper.MIDI_InsertTextSysexEvt(
+                    take,
+                    false,
+                    false,
+                    startppq,
+                    5,
+                    ch
+                  )
+                  lyric_idx = lyric_idx + 1
+                end
+              end
+            end
+            reaper.MIDI_Sort(take)
           end
         end
       end
