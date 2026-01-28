@@ -161,6 +161,7 @@ local last_js_mouse_state = 0      -- JS_Mouse_GetState の前フレーム値
 local last_note_signature = nil    -- ノート配列のシグネチャ（位置・長さ・ピッチを含む）
 local last_note_change_time = 0    -- 最後にノート配列が変化した時刻
 local upcoming_preview = ""        -- 次に挿入される予定の歌詞プレビュー（最大10ノート分）
+local update_lyric_chars           -- 前方宣言（apply_lyrics_text_to_all から参照）
 
 -- 歌詞用 Undo / Redo 用の履歴
 local lyric_history = {}           -- 各要素は { text = "全文" }
@@ -170,11 +171,11 @@ local lyric_history_max = 100      -- 最大保存数（必要なら調整可能
 -- 現在のプロジェクト名から歌詞ファイル名を決定
 -- 例: プロジェクトファイルが "MySong.rpp" の場合 → "MySong_lyrics.txt"
 --     未保存プロジェクトなどで名前が取得できない場合 → 既存の固定名を使用
-local project_dir = reaper.GetProjectPath("")
+local project_dir = reaper.GetProjectPath() or ""
 
 local function get_project_base_name()
   -- アクティブプロジェクトのファイルパスを取得
-  local _, proj_fn = reaper.EnumProjects(-1, "")
+  local _, proj_fn = reaper.EnumProjects(-1)
   if not proj_fn or proj_fn == "" then
     return nil
   end
@@ -289,11 +290,12 @@ local function apply_lyrics_text_to_all(new_text)
   end
 
   -- 先頭から順に再割り当て
-  local max_notes = math.min(note_count, lyric_chars and #lyric_chars or 0)
+  local lc = lyric_chars or {}
+  local max_notes = math.min(note_count, #lc)
   for i = 0, max_notes - 1 do
     local ok_note, _, _, startppq = reaper.MIDI_GetNote(take, i)
     if ok_note then
-      local ch = lyric_chars[i + 1] or ""
+      local ch = lc[i + 1] or ""
       reaper.MIDI_InsertTextSysexEvt(
         take,
         false,
@@ -339,7 +341,7 @@ local function build_lyric_units_from_text(text)
 end
 
 -- 歌詞テキストが変わったときに文字配列を更新
-function update_lyric_chars()
+update_lyric_chars = function()
   lyric_chars = build_lyric_units_from_text(lyric_text)
 end
 
@@ -714,15 +716,16 @@ local function main_loop()
           base_pos = note_count
         end
         local insert_pos = math.min(math.max(base_pos, 0), total_units)
+        local lc = lyric_chars or {}
 
         for i = 1, insert_pos do
-          table.insert(new_units, lyric_chars[i])
+          table.insert(new_units, lc[i])
         end
         for i = 1, #insert_units do
           table.insert(new_units, insert_units[i])
         end
         for i = insert_pos + 1, total_units do
-          table.insert(new_units, lyric_chars[i])
+          table.insert(new_units, lc[i])
         end
 
         lyric_chars = new_units
@@ -770,9 +773,10 @@ local function main_loop()
 
             -- 選択されていないノートに対応する歌詞だけ残す（選択されたノートの歌詞を削除）
             local new_units = {}
-            for i = 1, #lyric_chars do
+            local lc = lyric_chars or {}
+            for i = 1, #lc do
               if not selected_note_indices[i] then
-                table.insert(new_units, lyric_chars[i])
+                table.insert(new_units, lc[i])
               end
             end
             lyric_chars = new_units
@@ -811,7 +815,7 @@ local function main_loop()
                     take, j, true, true, 0, 0, ""
                   )
                   if retval and typ == 5 and math.abs(ppqpos - startppq) < 10 then
-                    lyric_text_for_note = msg
+                    lyric_text_for_note = msg or ""
                     break
                   end
                 end
@@ -830,7 +834,8 @@ local function main_loop()
             -- 選択されたノートの歌詞を結合（デフォルト値として使用）
             local default_lyrics = {}
             for i = 1, #selected_notes do
-              table.insert(default_lyrics, selected_notes[i].lyric or "")
+              local sn = selected_notes[i]
+              table.insert(default_lyrics, (sn and sn.lyric) or "")
             end
             local default_text = table.concat(default_lyrics, "")
             
@@ -858,8 +863,9 @@ local function main_loop()
               
               -- 選択されたノートのインデックスに対応する歌詞ユニット配列の位置を更新
               local new_units = {}
-              for i = 1, #lyric_chars do
-                new_units[i] = lyric_chars[i]
+              local lc = lyric_chars or {}
+              for i = 1, #lc do
+                new_units[i] = lc[i]
               end
               
               -- 選択されたノートの位置に対応する歌詞を更新
@@ -951,14 +957,15 @@ local function main_loop()
               
               -- 既存ユニットに対して、母音を挿入
               local new_units = {}
+              local lc = lyric_chars or {}
               for i = 1, insert_pos do
-                table.insert(new_units, lyric_chars[i])
+                table.insert(new_units, lc[i])
               end
               for i = 1, #insert_units do
                 table.insert(new_units, insert_units[i])
               end
-              for i = insert_pos + 1, #lyric_chars do
-                table.insert(new_units, lyric_chars[i])
+              for i = insert_pos + 1, #lc do
+                table.insert(new_units, lc[i])
               end
               
               lyric_chars = new_units
