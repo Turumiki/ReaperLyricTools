@@ -434,6 +434,26 @@ local function build_lyric_units_from_text(text)
   return units
 end
 
+-- ノートインデックス(0-based)に対応するユニットインデックス(1-based)を求める
+-- 改行ユニット("\n")はノートとして数えない
+local function note_index_to_unit_index(note_index, units)
+  if not note_index or note_index < 0 then return nil end
+  local u = units or {}
+  if #u == 0 then return nil end
+  local target = note_index + 1 -- 1-based ノート番号
+  local notes_seen = 0
+  for i = 1, #u do
+    local ch = u[i]
+    if ch ~= "\n" then
+      notes_seen = notes_seen + 1
+      if notes_seen == target then
+        return i
+      end
+    end
+  end
+  return nil
+end
+
 -- ノートインデックスに対応する「挿入位置（ユニットインデックス）」を求める
 -- last_selected_note_index: 最後に選択されたノートの 0-based インデックス（nil 可）
 -- note_count: テイク内のノート数
@@ -1082,11 +1102,12 @@ local function main_loop()
                 new_units[i] = lc[i]
               end
               
-              -- 選択されたノートの位置に対応する歌詞を更新
+              -- 選択されたノートの位置に対応する歌詞を更新（改行ユニットを考慮）
               for i = 1, edit_count do
                 local note_index = selected_notes[i].index
-                if note_index + 1 <= #new_units then
-                  new_units[note_index + 1] = edit_units[i]
+                local pos = note_index_to_unit_index(note_index, new_units)
+                if pos and pos >= 1 and pos <= #new_units then
+                  new_units[pos] = edit_units[i]
                 end
               end
               
