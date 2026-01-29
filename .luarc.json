@@ -1,0 +1,18 @@
+{
+  "runtime.version": "Lua 5.4",
+  "diagnostics.globals": [
+    "reaper",
+    "math"
+  ],
+  "workspace": {
+    "library": [
+      "~/.vscode/extensions/antoinebalaine.reascript-docs-0.1.16/resources/Sexan_reaper_defs.lua",
+      "~/.vscode/extensions/antoinebalaine.reascript-docs-0.1.16/resources/imgui_defs_0.10.lua",
+      "~/.vscode/extensions/antoinebalaine.reascript-docs-0.1.16/resources/reawwise_defs.lua",
+      "~/.cursor/extensions/antoinebalaine.reascript-docs-0.1.16/resources/Sexan_reaper_defs.lua",
+      "~/.cursor/extensions/antoinebalaine.reascript-docs-0.1.16/resources/imgui_defs_0.10.lua",
+      "~/.cursor/extensions/antoinebalaine.reascript-docs-0.1.16/resources/reawwise_defs.lua",
+      "reaper_imgui_stub.lua"
+    ]
+  }
+}

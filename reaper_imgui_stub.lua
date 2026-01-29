@@ -1,0 +1,15 @@
+---@meta
+---ReaImGui API stub for LuaLS (reaper.ImGui_*)
+---@class reaper
+---@field ImGui_CreateContext fun(name: string): userdata|nil
+---@field ImGui_SetNextWindowSize fun(ctx: userdata, w: number, h: number, cond: number): nil
+---@field ImGui_Begin fun(ctx: userdata, title: string, open: boolean, flags: number): boolean, boolean
+---@field ImGui_End fun(ctx: userdata): nil
+---@field ImGui_DestroyContext fun(ctx: userdata): nil
+---@field ImGui_Text fun(ctx: userdata, text: string): nil
+---@field ImGui_SameLine fun(ctx: userdata, offset?: number, spacing?: number): nil
+---@field ImGui_TextColored fun(ctx: userdata, r: number, g: number, b: number, a: number, text: string): nil
+---@field ImGui_Spacing fun(ctx: userdata): nil
+---@field ImGui_Button fun(ctx: userdata, label: string): boolean
+---@field ImGui_WindowFlags_NoCollapse number
+---@field ImGui_Cond_FirstUseEver number

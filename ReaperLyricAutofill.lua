@@ -14,6 +14,16 @@ Notes        :
 ]]
 
 ------------------------------------------------------------
+-- ReaImGui（reaper.ImGui_* C API で描画）
+------------------------------------------------------------
+local imgui_ctx = nil
+local function init_imgui()
+  if not reaper.ImGui_CreateContext then return false end
+  imgui_ctx = reaper.ImGui_CreateContext("ReaperLyricTools")
+  return imgui_ctx ~= nil
+end
+
+------------------------------------------------------------
 -- UTF-8文字列を1文字ずつに分解するユーティリティ
 ------------------------------------------------------------
 local function utf8_to_chars(str)
@@ -180,8 +190,6 @@ local lyric_text = ""              -- 現在ファイルから読み込んだ歌
 local lyric_chars = nil            -- ノートに割り当てる用の文字配列（改行除去済み）
 local last_lyric_text = nil        -- 前フレームの歌詞テキスト
 local last_note_count = -1         -- 前フレームのノート数（互換用）
-local gui_initialized = false      -- 状態表示用のシンプルなウィンドウ
-local last_mouse_cap = 0           -- クリック検出用（gfxウィンドウ内）
 local last_js_mouse_state = 0      -- JS_Mouse_GetState の前フレーム値
 local last_note_signature = nil    -- ノート配列のシグネチャ（位置・長さ・ピッチを含む）
 local last_note_change_time = 0    -- 最後にノート配列が変化した時刻
@@ -507,89 +515,8 @@ local check_interval = 0.2  -- 歌詞ファイル監視の更新間隔（秒）
 local note_apply_delay = 0.6 -- 「ノート編集が落ち着いてから」歌詞を反映する待ち時間（秒）
 local has_js_mouse = reaper.APIExists and reaper.APIExists("JS_Mouse_GetState") or false
 
-------------------------------------------------------------
--- レイアウト定義（ウィンドウ幅・高さに対する比率で指定）
-------------------------------------------------------------
-local LAYOUT = {
-  -- 初期ウィンドウサイズ（ピクセル）
-  default_w = 560,
-  default_h = 180,
-
-  -- 余白（ウィンドウ幅・高さに対する比率 0〜1）
-  margin_left_ratio   = 0.02,
-  margin_right_ratio  = 0.02,
-  margin_top_ratio    = 0.055,
-  margin_bottom_ratio = 0.055,
-
-  -- ボタン行
-  button_height_ratio = 0.18,   -- ウィンドウ高さに対するボタン高さ
-  button_gap_ratio    = 0.018,  -- ボタン間の隙間（幅に対する比率）
-  -- 各ボタンの幅の比率（合計で 1 以下、残りは gap で消費）
-  -- 順: フォルダを開く, 挿入, 削除, 変更, 挿入(母音), Undo, Redo
-  button_width_ratios = { 0.14, 0.11, 0.11, 0.11, 0.12, 0.11, 0.11 },
-
-  -- テキストエリア（行間など）
-  line_height_ratio = 0.10,  -- 1行あたりの高さ比率
-}
-
--- 現在のウィンドウサイズからレイアウトをピクセルに変換
-local function layout_pixels()
-  local w, h = gfx.w, gfx.h
-  local ml = math.floor(w * LAYOUT.margin_left_ratio)
-  local mr = math.floor(w * LAYOUT.margin_right_ratio)
-  local mt = math.floor(h * LAYOUT.margin_top_ratio)
-  local mb = math.floor(h * LAYOUT.margin_bottom_ratio)
-  local btn_h = math.floor(h * LAYOUT.button_height_ratio)
-  local gap = math.floor(w * LAYOUT.button_gap_ratio)
-  local line_h = math.floor(h * LAYOUT.line_height_ratio)
-
-  local btn_y = h - mb - btn_h
-  local content_w = w - ml - mr
-  local total_btn_ratio = 0
-  for i = 1, #LAYOUT.button_width_ratios do
-    total_btn_ratio = total_btn_ratio + LAYOUT.button_width_ratios[i]
-  end
-  local total_gap = gap * (#LAYOUT.button_width_ratios - 1)
-  local btn_area_w = content_w - total_gap
-  local btn_widths = {}
-  for i = 1, #LAYOUT.button_width_ratios do
-    btn_widths[i] = math.floor(btn_area_w * (LAYOUT.button_width_ratios[i] / total_btn_ratio))
-  end
-
-  local btn_x = {}
-  btn_x[1] = ml
-  for i = 2, #btn_widths do
-    btn_x[i] = btn_x[i - 1] + btn_widths[i - 1] + gap
-  end
-
-  return {
-    margin_left = ml,
-    margin_top = mt,
-    line_height = line_h,
-    button_y = btn_y,
-    button_h = btn_h,
-    button_x = btn_x,
-    button_w = btn_widths,
-    pad_btn_x = math.floor(btn_widths[1] * 0.07),
-    pad_btn_y = math.floor(btn_h * 0.25),
-  }
-end
-
 local function main_loop()
-  -- シンプルな常時表示ウィンドウ（gfx）
-  if not gui_initialized then
-    gfx.init("ReaperLyricTools", LAYOUT.default_w, LAYOUT.default_h, 0)
-    gfx.dock(-1) -- ドッキング状態を記憶・復元
-    gfx.setfont(1, "Arial", 15)
-    gui_initialized = true
-  end
-
-  -- ウィンドウを閉じた / Esc でスクリプト終了
-  local ch = gfx.getchar()
-  if ch == -1 or ch == 27 then
-    return
-  end
-
+  local ctx = imgui_ctx
   local now = reaper.time_precise()
 
   -- 複数トラック対応: テイクが切り替わったら保存→別ファイル読み込み
@@ -752,101 +679,55 @@ local function main_loop()
   end
 
   -- ------------------------------
-  -- ウィンドウ描画（レイアウト比率で計算）
+  -- ImGui ウィンドウ描画
   -- ------------------------------
-  local lay = layout_pixels()
-  local ml, mt, lh = lay.margin_left, lay.margin_top, lay.line_height
-  local btn_y, btn_h = lay.button_y, lay.button_h
-  local pad_x, pad_y = lay.pad_btn_x, lay.pad_btn_y
-  -- Undo/Redo 用の上段ボタン Y 座標（下段ボタンの一つ上に配置）
-  local undo_y = btn_y - btn_h - math.floor(lh * 0.4)
+  if not ctx then
+    reaper.defer(main_loop)
+    return
+  end
 
-  gfx.set(0.1, 0.1, 0.1, 1)
-  gfx.rect(0, 0, gfx.w, gfx.h, 1)
+  local flags = reaper.ImGui_WindowFlags_NoCollapse
+  if type(flags) == "function" then flags = flags() else flags = flags or 0 end
+  local cond = reaper.ImGui_Cond_FirstUseEver
+  if type(cond) == "function" then cond = cond() else cond = cond or 0 end
+  reaper.ImGui_SetNextWindowSize(ctx, 520, 220, cond)
+  local visible, open = reaper.ImGui_Begin(ctx, "ReaperLyricTools", true, flags)
+  if not visible then
+    reaper.ImGui_End(ctx)
+    if not open then
+      if reaper.ImGui_DestroyContext then reaper.ImGui_DestroyContext(ctx) end
+      imgui_ctx = nil
+    end
+    reaper.defer(main_loop)
+    return
+  end
 
-  gfx.set(1, 1, 1, 1)
-  gfx.x, gfx.y = ml, mt
-  gfx.drawstr("歌詞ファイル: ")
-  gfx.set(0.7, 0.9, 0.7, 1)
-  -- フルパスではなくファイル名のみ表示
+  -- ReaImGui TextColored(ctx, color, text): color = 0xAARRGGBB
+  local function rgba(r, g, b, a)
+    a = a and math.floor(a * 255) or 255
+    return math.floor(r * 255) * 0x10000 + math.floor(g * 255) * 0x100 + math.floor(b * 255) + a * 0x1000000
+  end
+
+  reaper.ImGui_Text(ctx, "歌詞ファイル: ")
+  reaper.ImGui_SameLine(ctx, 0, 4)
   local path_str = current_lyrics_file_path or ""
   local just_name = path_str:match("([^/\\]+)$") or path_str
-  gfx.drawstr(just_name)
-
-  gfx.y = gfx.y + lh
-  gfx.x = ml
-  gfx.set(0.8, 0.8, 0.8, 1)
-  gfx.drawstr("このファイルをテキストエディタで開いて編集してください（日本語・複数行OK）。")
+  reaper.ImGui_TextColored(ctx, rgba(0.7, 0.9, 0.7, 1), just_name)
+  reaper.ImGui_TextColored(ctx, rgba(0.8, 0.8, 0.8, 1), "このファイルをテキストエディタで開いて編集してください（日本語・複数行OK）。")
 
   local is_editing = _G.__reaper_lyrictools_is_editing
-  gfx.y = gfx.y + lh
-  gfx.x = ml
   if is_editing then
-    gfx.set(0.9, 0.6, 0.4, 1)
-    gfx.drawstr("ノート編集中: 歌詞反映を待機中…")
+    reaper.ImGui_TextColored(ctx, rgba(0.9, 0.6, 0.4, 1), "ノート編集中: 歌詞反映を待機中…")
   else
-    gfx.set(0.4, 0.9, 0.4, 1)
-    gfx.drawstr("待機中: 歌詞は最新の状態です。")
+    reaper.ImGui_TextColored(ctx, rgba(0.4, 0.9, 0.4, 1), "待機中: 歌詞は最新の状態です。")
   end
 
-  gfx.y = gfx.y + lh
-  gfx.x = ml
-  gfx.set(0.8, 0.8, 0.8, 1)
-  gfx.drawstr("次に挿入される歌詞 (最大10ノート): ")
-  gfx.y = gfx.y + lh
-  gfx.x = ml
-  gfx.set(1, 1, 1, 1)
-  gfx.drawstr(upcoming_preview or "")
+  reaper.ImGui_TextColored(ctx, rgba(0.8, 0.8, 0.8, 1), "次に挿入される歌詞 (最大10ノート): ")
+  reaper.ImGui_Text(ctx, upcoming_preview or "")
 
+  reaper.ImGui_Spacing(ctx)
   -- 下段ボタン行（1=フォルダ, 2=挿入, 3=削除, 4=変更, 5=母音）
-  local bottom_labels = {
-    "フォルダ", "＋挿入", "－削除", "✎変更", "V母音"
-  }
-  for i = 1, 5 do
-    local bx, bw = lay.button_x[i], lay.button_w[i]
-    -- ボタンごとに色を変える
-    if i == 2 or i == 5 then
-      -- 挿入系: 青緑系
-      gfx.set(0.2, 0.5, 0.6, 1)
-    elseif i == 3 then
-      -- 削除: 赤系
-      gfx.set(0.6, 0.25, 0.25, 1)
-    elseif i == 4 then
-      -- 変更: 落ち着いた青系
-      gfx.set(0.3, 0.35, 0.6, 1)
-    else
-      -- フォルダ: グレー
-      gfx.set(0.3, 0.3, 0.3, 1)
-    end
-    gfx.rect(bx, btn_y, bw, btn_h, 1)
-    gfx.set(1, 1, 1, 1)
-    gfx.x = bx + pad_x
-    gfx.y = btn_y + pad_y
-    gfx.drawstr(bottom_labels[i])
-  end
-
-  -- 上段 Undo / Redo ボタン（6,7 番スロットを使用）
-  local undo_labels = { "↺ Undo", "↻ Redo" }
-  for j = 1, 2 do
-    local idx = 5 + j -- 6,7
-    local bx, bw = lay.button_x[idx], lay.button_w[idx]
-    gfx.set(0.25, 0.45, 0.7, 1)
-    gfx.rect(bx, undo_y, bw, btn_h, 1)
-    gfx.set(1, 1, 1, 1)
-    gfx.x = bx + pad_x
-    gfx.y = undo_y + pad_y
-    gfx.drawstr(undo_labels[j])
-  end
-
-  gfx.update()
-
-  -- ボタンクリック処理（左クリックの立ち上がりを検出）
-  local mx, my = gfx.mouse_x, gfx.mouse_y
-  local mcap = gfx.mouse_cap
-  if (last_mouse_cap & 1) == 0 and (mcap & 1) == 1 then
-    -- 下段ボタン (1〜5)
-    if mx >= lay.button_x[1] and mx <= (lay.button_x[1] + lay.button_w[1])
-       and my >= btn_y and my <= (btn_y + btn_h) then
+  if reaper.ImGui_Button(ctx, "フォルダ") then
       -- プロジェクトフォルダを開く
       -- SWS の CF_ShellExecute があればそれを使う（既定のファイラで開く）
       if reaper.APIExists and reaper.APIExists("CF_ShellExecute") then
@@ -861,8 +742,9 @@ local function main_loop()
           0
         )
       end
-    elseif mx >= lay.button_x[2] and mx <= (lay.button_x[2] + lay.button_w[2])
-       and my >= btn_y and my <= (btn_y + btn_h) then
+  end
+  reaper.ImGui_SameLine(ctx)
+  if reaper.ImGui_Button(ctx, "＋挿入") then
       -- 挿入ボタン: 1行入力して、テキストファイルに挿入のみ行う
       -- 歌詞ユニット配列が未構築なら構築
       if not lyric_chars or #lyric_chars == 0 then
@@ -959,8 +841,9 @@ local function main_loop()
         apply_lyrics_text_to_all(new_text)
         push_lyric_history()  -- 変更後の状態を履歴に追加（Undo 用）
       end
-    elseif mx >= lay.button_x[3] and mx <= (lay.button_x[3] + lay.button_w[3])
-       and my >= btn_y and my <= (btn_y + btn_h) then
+  end
+  reaper.ImGui_SameLine(ctx)
+  if reaper.ImGui_Button(ctx, "－削除") then
       -- 削除ボタン: 選択されたノートの歌詞を削除
       local editor = reaper.MIDIEditor_GetActive()
       if not editor then
@@ -1020,8 +903,9 @@ local function main_loop()
           end
         end
       end
-    elseif mx >= lay.button_x[4] and mx <= (lay.button_x[4] + lay.button_w[4])
-       and my >= btn_y and my <= (btn_y + btn_h) then
+  end
+  reaper.ImGui_SameLine(ctx)
+  if reaper.ImGui_Button(ctx, "✎変更") then
       -- 変更ボタン: 選択されたノートの歌詞を編集
       local editor = reaper.MIDIEditor_GetActive()
       if not editor then
@@ -1121,8 +1005,9 @@ local function main_loop()
           end
         end
       end
-    elseif mx >= lay.button_x[5] and mx <= (lay.button_x[5] + lay.button_w[5])
-       and my >= btn_y and my <= (btn_y + btn_h) then
+  end
+  reaper.ImGui_SameLine(ctx)
+  if reaper.ImGui_Button(ctx, "V母音") then
       -- 挿入（母音）ボタン: 選択されたノートの歌詞から母音を抽出して自動挿入（確認なし）
       -- 歌詞ユニット配列が未構築なら構築
       if not lyric_chars or #lyric_chars == 0 then
@@ -1208,9 +1093,9 @@ local function main_loop()
           end
         end
       end
-    -- 上段 Undo / Redo ボタン
-    elseif mx >= lay.button_x[6] and mx <= (lay.button_x[6] + lay.button_w[6])
-       and my >= undo_y and my <= (undo_y + btn_h) then
+  end
+  reaper.ImGui_Spacing(ctx)
+  if reaper.ImGui_Button(ctx, "↺ Undo") then
       -- Undo（歌詞）ボタン
       if lyric_history_index > 1 then
         lyric_history_index = lyric_history_index - 1
@@ -1221,8 +1106,9 @@ local function main_loop()
       else
         reaper.ShowMessageBox("これ以上戻せる履歴がありません。", "ReaperLyricTools - Undo", 0)
       end
-    elseif mx >= lay.button_x[7] and mx <= (lay.button_x[7] + lay.button_w[7])
-       and my >= undo_y and my <= (undo_y + btn_h) then
+  end
+  reaper.ImGui_SameLine(ctx)
+  if reaper.ImGui_Button(ctx, "↻ Redo") then
       -- Redo（歌詞）ボタン
       if lyric_history_index > 0 and lyric_history_index < #lyric_history then
         lyric_history_index = lyric_history_index + 1
@@ -1233,9 +1119,13 @@ local function main_loop()
       else
         reaper.ShowMessageBox("やり直せる履歴がありません。", "ReaperLyricTools - Redo", 0)
       end
-    end
   end
-  last_mouse_cap = mcap
+
+  reaper.ImGui_End(ctx)
+  if not open then
+    if reaper.ImGui_DestroyContext then reaper.ImGui_DestroyContext(ctx) end
+    imgui_ctx = nil
+  end
 
   -- 停止したいときは「ウィンドウを閉じる」「Esc」、
   -- または「Actions → Terminate instances of script」等で止めてください。
@@ -1247,6 +1137,15 @@ end
 ------------------------------------------------------------
 
 local function init()
+  if not init_imgui() then
+    reaper.ShowMessageBox(
+      "ReaImGui 拡張が見つかりません。\nReaPack の ReaTeam Extensions から ReaImGui をインストールしてください。",
+      "ReaperLyricTools - エラー",
+      0
+    )
+    return
+  end
+
   local created = ensure_lyrics_file()
   if created then
     reaper.ShowMessageBox(
